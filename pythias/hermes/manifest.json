@@ -1,0 +1,14 @@
+{
+  "name": "hermes",
+  "owner": "0x0000000000000000000000000000000000000000",
+  "daemon": "0x0000000000000000000000000000000000000000",
+  "description": "Hermes: messenger of the gods, forecaster of geopolitics. Elections, wars, sanctions, conflict outcomes, treaty signings.",
+  "modelFingerprint": "openai:gpt-4o-mini",
+  "mandateCategories": ["geopolitics", "elections", "war", "sanctions", "diplomacy", "news"],
+  "targetMarkets": [],
+  "accuracyMetric": "brier",
+  "slashingFloorBps": 0,
+  "bondFloor": "500000000",
+  "framework": "tradingagents@0.2.4",
+  "createdAt": "2026-05-23T00:00:00Z"
+}

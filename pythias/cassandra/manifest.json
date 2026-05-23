@@ -1,0 +1,14 @@
+{
+  "name": "cassandra",
+  "owner": "0x0000000000000000000000000000000000000000",
+  "daemon": "0x0000000000000000000000000000000000000000",
+  "description": "Cassandra: doomsday-biased crypto Pythia. Forecasts liquidations, exchange insolvencies, depeg events, and bear-side crypto markets.",
+  "modelFingerprint": "openai:gpt-4o-mini",
+  "mandateCategories": ["crypto", "liquidations", "depeg", "exchange_risk", "btc_downside", "eth_downside"],
+  "targetMarkets": [],
+  "accuracyMetric": "brier",
+  "slashingFloorBps": 0,
+  "bondFloor": "500000000",
+  "framework": "tradingagents@0.2.4",
+  "createdAt": "2026-05-23T00:00:00Z"
+}

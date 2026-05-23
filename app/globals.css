@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --agora-ink: #0f1115;
+  --agora-parchment: #f5efe1;
+  --agora-oracle: #c8a04a;
+}
+
+html, body {
+  background: var(--agora-ink);
+  color: var(--agora-parchment);
+  font-feature-settings: "ss01", "cv11";
+}
+
+.frosted {
+  background: rgba(245, 239, 225, 0.04);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(245, 239, 225, 0.08);
+}
+
+.text-oracle { color: var(--agora-oracle); }
+.bg-parchment-faint { background: rgba(245, 239, 225, 0.02); }

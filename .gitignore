@@ -1,0 +1,32 @@
+node_modules
+.next
+out
+build
+dist
+.env
+.env.local
+.env.*.local
+*.log
+
+# Foundry
+contracts/cache
+contracts/out
+contracts/broadcast
+contracts/lib/forge-std
+
+# Python
+__pycache__
+*.pyc
+.venv
+.python-version
+.uv
+.pytest_cache
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea
