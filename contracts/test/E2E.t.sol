@@ -88,8 +88,10 @@ contract E2ETest is Test {
         usdc.approve(vaultAddr, 5_000e6);
         uint256 sh2 = vault.stake(5_000e6);
         vm.stopPrank();
-        assertEq(sh1, sh2, "first-staker parity");
-        assertEq(vault.totalSupply(), sh1 + sh2);
+        // Dead-share lock absorbs DEAD_SHARES (=1e6) of the first staker's shares,
+        // so sh1 is exactly DEAD_SHARES below sh2 at equal stake.
+        assertEq(sh1 + 1e6, sh2, "first-staker parity (mod dead-share lock)");
+        assertEq(vault.totalSupply(), sh1 + sh2 + 1e6, "supply includes dead shares");
         assertApproxEqAbs(vault.nav(), 1e18, 1, "nav ~1 before any PnL");
 
         // ----- 3. create a market and emit a forecast
@@ -105,7 +107,7 @@ contract E2ETest is Test {
         uint256 freeBefore = vault.freeStake();
         assertEq(freeBefore, 10_000e6, "free stake = sum of stakes");
         vm.prank(daemon);
-        uint256 positionId = vault.openPosition(marketId, true, 1_000e6, 0.65e18);
+        uint256 positionId = vault.openPosition(marketId, true, 1_000e6, 0.65e18, bytes32(uint256(1)));
         assertEq(positionId, 1);
         // Positions are off-balance-sheet: freeStake drops by the full position amount.
         assertEq(vault.freeStake(), freeBefore - 1_000e6, "free drops by full position");
@@ -206,17 +208,18 @@ contract E2ETest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(automationPk, digest);
 
         uint256 bondBefore = vault.bond();
-        arbiter.slashMandateBreach(nameHash, marketId, traceHash, expiry, salt, v, r, s);
+        // Bond (4k) is below DUAL_SIG_BOND_THRESHOLD ($10k) so co-sig is ignored.
+        arbiter.slashMandateBreach(nameHash, marketId, traceHash, expiry, salt, v, r, s, 0, bytes32(0), bytes32(0));
         assertEq(vault.bond(), bondBefore - bondBefore / 4, "25% burn");
 
         // replay protection: same digest can't be used twice
         vm.expectRevert(SlashingArbiter.AttestationReplay.selector);
-        arbiter.slashMandateBreach(nameHash, marketId, traceHash, expiry, salt, v, r, s);
+        arbiter.slashMandateBreach(nameHash, marketId, traceHash, expiry, salt, v, r, s, 0, bytes32(0), bytes32(0));
 
         // wrong signer is rejected
         (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(0xDEAD, digest);
         vm.expectRevert(SlashingArbiter.InvalidSignature.selector);
-        arbiter.slashMandateBreach(nameHash, marketId, traceHash, expiry, salt + 1, v2, r2, s2);
+        arbiter.slashMandateBreach(nameHash, marketId, traceHash, expiry, salt + 1, v2, r2, s2, 0, bytes32(0), bytes32(0));
     }
 
     // ============================================================
@@ -272,7 +275,8 @@ contract E2ETest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(automationPk, digest);
 
         uint256 bondBefore = vault.bond();
-        arbiter.delistAccuracyDecay(nameHash, brierScaled, expiry, salt, v, r, s);
+        // Bond (2k) below dual-sig threshold — co-sig ignored.
+        arbiter.delistAccuracyDecay(nameHash, brierScaled, expiry, salt, v, r, s, 0, bytes32(0), bytes32(0));
 
         Registry.Pythia memory p = registry.getPythia(nameHash);
         assertTrue(p.delisted, "delisted flag set");
@@ -302,7 +306,7 @@ contract E2ETest is Test {
 
         // Non-daemon cannot open position
         vm.expectRevert(PythiaVault.CallerNotDaemon.selector);
-        vault.openPosition(keccak256("M"), true, 100e6, 0.5e18);
+        vault.openPosition(keccak256("M"), true, 100e6, 0.5e18, bytes32(uint256(99)));
 
         // Non-owner cannot withdraw bond
         vm.prank(attacker);
@@ -351,18 +355,232 @@ contract E2ETest is Test {
         bytes32 structHash = keccak256(abi.encode(arbiter.MANDATE_TYPEHASH(), nameHash, keccak256("BAD-M"), keccak256("BAD-T"), expiry, salt));
         bytes32 digest = _hashTypedDataV4(structHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(automationPk, digest);
-        arbiter.slashMandateBreach(nameHash, keccak256("BAD-M"), keccak256("BAD-T"), expiry, salt, v, r, s);
+        // Bond (4k) below dual-sig threshold.
+        arbiter.slashMandateBreach(nameHash, keccak256("BAD-M"), keccak256("BAD-T"), expiry, salt, v, r, s, 0, bytes32(0), bytes32(0));
 
         assertEq(vault.freeStake(), freeBefore, "freeStake unchanged by bond slash");
 
-        // Staker still redeems exactly principal (no PnL, no fees)
+        // Staker still redeems exactly principal (no PnL, no fees), modulo the
+        // 1 USDC dead-share lock taken at first stake.
         vm.startPrank(staker1);
         vault.queueRedeem(shares);
         vm.stopPrank();
         skip(24 hours + 1);
         vm.prank(staker1);
         uint256 out = vault.redeem();
-        assertEq(out, 10_000e6, "staker keeps full principal");
+        assertEq(out, 10_000e6 - 1e6, "staker keeps principal minus dead-share lock");
+    }
+
+    // ============================================================
+    //  HARDENING 1 — ERC-4626 inflation attack is blocked
+    // ============================================================
+    // Attacker mints first share for 1 USDC (the min stake), then donates a
+    // large amount of USDC directly to the vault to inflate per-share NAV.
+    // A subsequent honest staker depositing $100 must still receive a meaningful
+    // (non-zero, non-trivial) share count — the dead-share lock ensures this.
+    function test_inflationAttack_blocked() public {
+        bytes32 nameHash;
+        address vaultAddr;
+        vm.startPrank(owner);
+        usdc.approve(address(factory), 2_000e6);
+        (vaultAddr, nameHash) = factory.createPythia(
+            "apollo-inf", daemon, address(0), keccak256("M"), keccak256("R"), 100e6, 2_000e6
+        );
+        vm.stopPrank();
+        PythiaVault vault = PythiaVault(vaultAddr);
+
+        // Attacker tries the classic V2 trick: tiny first stake, then huge
+        // donation directly to the vault contract.
+        vm.startPrank(attacker);
+        usdc.approve(vaultAddr, 1_000e6);
+        uint256 attackerShares = vault.stake(2e6); // 2 USDC — above first-stake minimum
+        // Direct donation (NOT via stake) — would skew NAV in a naive ERC-4626.
+        usdc.transfer(vaultAddr, 500e6); // 500 USDC donation
+        vm.stopPrank();
+
+        // Honest staker comes in with 100 USDC.
+        vm.startPrank(staker1);
+        usdc.approve(vaultAddr, 100e6);
+        uint256 victimShares = vault.stake(100e6);
+        vm.stopPrank();
+
+        // Without dead-share protection, victimShares could round to 0 and the
+        // attacker would own ~100% of the inflated pool. With the lock, the
+        // donation is split pro-rata between attacker AND the dead address, so
+        // the attacker's gain from the donation is bounded by their share of
+        // pre-donation supply.
+        assertGt(victimShares, 0, "victim must receive non-zero shares");
+
+        // The right invariant for an inflation attack is: did the victim
+        // retain redeemable value close to what they deposited? Their claim on
+        // the pool equals (victimShares / totalSupply) * freeStake.
+        uint256 supplyAfter = vault.totalSupply();
+        uint256 freeAfter = vault.freeStake();
+        uint256 victimClaim = (victimShares * freeAfter) / supplyAfter;
+        assertGe(victimClaim, 99e6, "victim retains >=99 USDC of claim (not robbed)");
+
+        // Cross-check: the donation attack is unprofitable. Attacker's claim
+        // is bounded by their (small) pre-attack share of the pool, so they
+        // cannot recover the full donation they put in.
+        uint256 attackerClaim = (attackerShares * freeAfter) / supplyAfter;
+        // Attacker spent 2 USDC stake + 500 USDC donation = 502 USDC; their
+        // redeemable claim must be strictly less than the donation.
+        assertLt(attackerClaim, 500e6, "attacker cannot recover their donation");
+    }
+
+    // ============================================================
+    //  HARDENING 2 — Position-open replay nonce
+    // ============================================================
+    // Daemon signs (marketId, yes, amount, nonce). A retried tx with the same
+    // nonce must revert so a transient RPC error cannot double-open.
+    function test_positionReplay_blocked() public {
+        bytes32 nameHash;
+        address vaultAddr;
+        vm.startPrank(owner);
+        usdc.approve(address(factory), 2_000e6);
+        (vaultAddr, nameHash) = factory.createPythia(
+            "apollo-rep", daemon, address(0), keccak256("M"), keccak256("R"), 100e6, 2_000e6
+        );
+        vm.stopPrank();
+        PythiaVault vault = PythiaVault(vaultAddr);
+
+        // Stake enough for two positions of 500 USDC each.
+        vm.startPrank(staker1);
+        usdc.approve(vaultAddr, 5_000e6);
+        vault.stake(5_000e6);
+        vm.stopPrank();
+
+        bytes32 marketId = keccak256("CPI-REP");
+        market.createMarket(marketId, "replay test");
+        bytes32 nonce = bytes32(uint256(0xCAFE));
+
+        vm.prank(daemon);
+        uint256 pid1 = vault.openPosition(marketId, true, 500e6, 0.6e18, nonce);
+        assertEq(pid1, 1);
+
+        // Same nonce — must revert.
+        vm.prank(daemon);
+        vm.expectRevert(PythiaVault.PositionReplayed.selector);
+        vault.openPosition(marketId, true, 500e6, 0.6e18, nonce);
+
+        // Different nonce on the same intent succeeds.
+        vm.prank(daemon);
+        uint256 pid2 = vault.openPosition(marketId, true, 500e6, 0.6e18, bytes32(uint256(0xCAFF)));
+        assertEq(pid2, 2);
+    }
+
+    // ============================================================
+    //  HARDENING 3 — stakePrincipal stays consistent across stake/redeem
+    // ============================================================
+    // Stake 5k, redeem half, stake 5k → stakePrincipal should be ~7.5k, not 10k.
+    function test_stakePrincipal_consistent() public {
+        bytes32 nameHash;
+        address vaultAddr;
+        vm.startPrank(owner);
+        usdc.approve(address(factory), 2_000e6);
+        (vaultAddr, nameHash) = factory.createPythia(
+            "apollo-prn", daemon, address(0), keccak256("M"), keccak256("R"), 100e6, 2_000e6
+        );
+        vm.stopPrank();
+        PythiaVault vault = PythiaVault(vaultAddr);
+
+        vm.startPrank(staker1);
+        usdc.approve(vaultAddr, 10_000e6);
+        uint256 sh1 = vault.stake(5_000e6);
+        vm.stopPrank();
+        assertEq(vault.stakePrincipal(), 5_000e6, "principal after first stake");
+
+        // Queue + redeem half.
+        vm.startPrank(staker1);
+        vault.queueRedeem(sh1 / 2);
+        vm.stopPrank();
+        skip(24 hours + 1);
+        vm.prank(staker1);
+        vault.redeem();
+
+        // Principal should be ~half: 2.5k. Tolerate a small rounding band.
+        assertApproxEqAbs(vault.stakePrincipal(), 2_500e6, 1e6, "principal after redeem");
+
+        // Stake 5k more. Principal should land ~7.5k.
+        vm.startPrank(staker1);
+        vault.stake(5_000e6);
+        vm.stopPrank();
+        assertApproxEqAbs(vault.stakePrincipal(), 7_500e6, 1e6, "principal after second stake");
+    }
+
+    // ============================================================
+    //  HARDENING 4 — SlashingArbiter timelock on setAutomation
+    // ============================================================
+    // Activate must revert until TIMELOCK has elapsed; succeeds after.
+    function test_setAutomation_timelock_enforced() public {
+        address newAuto = address(0xA07);
+        vm.prank(address(this));
+        arbiter.proposeAutomation(newAuto);
+        assertEq(arbiter.pendingAutomation(), newAuto, "pending set");
+        assertEq(arbiter.automation(), automation, "active unchanged before activation");
+
+        // Same-block activation must revert.
+        vm.prank(address(this));
+        vm.expectRevert(SlashingArbiter.TimelockNotElapsed.selector);
+        arbiter.activateAutomation();
+
+        // 23h59m later: still locked.
+        skip(24 hours - 1);
+        vm.prank(address(this));
+        vm.expectRevert(SlashingArbiter.TimelockNotElapsed.selector);
+        arbiter.activateAutomation();
+
+        // 1s past the TIMELOCK: activation succeeds.
+        skip(2);
+        vm.prank(address(this));
+        arbiter.activateAutomation();
+        assertEq(arbiter.automation(), newAuto, "active rotated after timelock");
+        assertEq(arbiter.pendingAutomation(), address(0), "pending cleared");
+
+        // Activating again with no pending change reverts.
+        vm.prank(address(this));
+        vm.expectRevert(SlashingArbiter.NoPendingChange.selector);
+        arbiter.activateAutomation();
+    }
+
+    // ============================================================
+    //  HARDENING 5 — Dual-sig required for high-bond mandate slash
+    // ============================================================
+    // Bond above DUAL_SIG_BOND_THRESHOLD: automation sig alone reverts.
+    // Adding the traceValidator co-sig on the same digest succeeds.
+    function test_slashMandateBreach_dualSig_above_threshold() public {
+        bytes32 nameHash;
+        address vaultAddr;
+        // Fund owner with enough for a 20k bond (well above the 10k threshold).
+        usdc.transfer(owner, 25_000e6);
+        vm.startPrank(owner);
+        usdc.approve(address(factory), 20_000e6);
+        (vaultAddr, nameHash) = factory.createPythia(
+            "apollo-dual", daemon, address(0), keccak256("M"), keccak256("R"), 100e6, 20_000e6
+        );
+        vm.stopPrank();
+        PythiaVault vault = PythiaVault(vaultAddr);
+        assertGt(vault.bond(), arbiter.DUAL_SIG_BOND_THRESHOLD(), "bond above threshold");
+
+        bytes32 marketId = keccak256("BAD-MARKET");
+        bytes32 traceHash = keccak256("BAD-TRACE");
+        uint256 expiry = block.timestamp + 1 hours;
+        uint256 salt = 7;
+        bytes32 structHash = keccak256(abi.encode(
+            arbiter.MANDATE_TYPEHASH(), nameHash, marketId, traceHash, expiry, salt
+        ));
+        bytes32 digest = _hashTypedDataV4(structHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(automationPk, digest);
+
+        // Single sig (co-sig = zero) → reverts due to bond above threshold.
+        vm.expectRevert(SlashingArbiter.NeedSecondAttestation.selector);
+        arbiter.slashMandateBreach(nameHash, marketId, traceHash, expiry, salt, v, r, s, 0, bytes32(0), bytes32(0));
+
+        // Trace validator co-signs the SAME digest → succeeds.
+        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(validatorPk, digest);
+        uint256 bondBefore = vault.bond();
+        arbiter.slashMandateBreach(nameHash, marketId, traceHash, expiry, salt, v, r, s, v2, r2, s2);
+        assertEq(vault.bond(), bondBefore - bondBefore / 4, "25% burn after dual-sig");
     }
 
     // -- EIP-712 digest helper that matches SlashingArbiter's domain

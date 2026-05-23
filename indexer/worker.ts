@@ -66,7 +66,7 @@ async function processRegistryEvents(fromBlock: bigint, toBlock: bigint) {
   const fcLogs = await client.getLogs({
     address: REGISTRY,
     event: parseAbiItem(
-      "event ForecastEmitted(bytes32 indexed nameHash, bytes32 indexed marketId, uint256 prob, bytes32 traceHash, uint64 blockTime)"
+      "event ForecastEmitted(bytes32 indexed nameHash, bytes32 indexed marketId, uint256 prob, bytes32 traceHash, uint64 blockTime, address daemon)"
     ) as any,
     fromBlock,
     toBlock,

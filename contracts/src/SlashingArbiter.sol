@@ -30,6 +30,19 @@ contract SlashingArbiter is EIP712, Ownable {
     /// @notice Pre-configured slash recipients (dead address by default).
     address public constant BURN_ADDRESS = 0x000000000000000000000000000000000000dEaD;
 
+    /// @notice 24h timelock between proposing and activating a setter change.
+    uint64 public constant TIMELOCK = 24 hours;
+    /// @notice Bond above this threshold ($10k) requires a co-sig on mandate
+    /// + decay slashes. Sub-threshold (hackathon cohort) stays single-sig.
+    uint256 public constant DUAL_SIG_BOND_THRESHOLD = 10_000e6;
+
+    /// @notice Pending automation rotation; activated by `activateAutomation`.
+    address public pendingAutomation;
+    uint64  public automationEffectiveAt;
+    /// @notice Pending trace-validator rotation.
+    address public pendingTraceValidator;
+    uint64  public traceValidatorEffectiveAt;
+
     bytes32 public constant MANDATE_TYPEHASH = keccak256(
         "MandateBreach(bytes32 nameHash,bytes32 marketId,bytes32 traceHash,uint256 expiry,uint256 salt)"
     );
@@ -46,11 +59,18 @@ contract SlashingArbiter is EIP712, Ownable {
     event DowntimeSlashed(bytes32 indexed nameHash, uint256 hoursLate, uint256 amount);
     event TraceFraudSlashed(bytes32 indexed nameHash, address submitter, uint256 toSubmitter, uint256 burned);
     event AccuracyDecayDelisted(bytes32 indexed nameHash, uint256 brierScaled);
+    event AutomationProposed(address indexed newAutomation, uint64 effectiveAt);
+    event AutomationActivated(address indexed newAutomation);
+    event TraceValidatorProposed(address indexed newValidator, uint64 effectiveAt);
+    event TraceValidatorActivated(address indexed newValidator);
 
     error InvalidSignature();
     error AttestationReplay();
     error AttestationExpired();
     error NotYetSlashable();
+    error NeedSecondAttestation();
+    error TimelockNotElapsed();
+    error NoPendingChange();
 
     constructor(address _registry, address _automation, address _traceValidator)
         EIP712("AgoraSlashing", "1")
@@ -62,19 +82,26 @@ contract SlashingArbiter is EIP712, Ownable {
     }
 
     // -- Type 1: mandate breach -------------------------------------------
+    /// @dev `v2/r2/s2` are the traceValidator co-sig over the SAME digest.
+    /// Verified only when bond > DUAL_SIG_BOND_THRESHOLD; ignored otherwise.
     function slashMandateBreach(
         bytes32 nameHash,
         bytes32 marketId,
         bytes32 traceHash,
         uint256 expiry,
         uint256 salt,
-        uint8 v, bytes32 r, bytes32 s
+        uint8 v, bytes32 r, bytes32 s,
+        uint8 v2, bytes32 r2, bytes32 s2
     ) external {
         bytes32 structHash = keccak256(abi.encode(MANDATE_TYPEHASH, nameHash, marketId, traceHash, expiry, salt));
-        _verify(structHash, automation, expiry, v, r, s);
+        bytes32 digest = _hashTypedDataV4(structHash);
+        _verifyAndConsume(digest, automation, expiry, v, r, s);
         Registry.Pythia memory p = registry.getPythia(nameHash);
         require(p.owner != address(0), "unknown pythia");
         PythiaVault vault = PythiaVault(p.vault);
+        if (vault.bond() > DUAL_SIG_BOND_THRESHOLD) {
+            if (ecrecover(digest, v2, r2, s2) != traceValidator) revert NeedSecondAttestation();
+        }
         uint256 slashAmt = vault.bond() / 4; // 25%
         vault.slashBond(1, slashAmt, BURN_ADDRESS);
         registry.recordSlash(nameHash, 1, slashAmt);
@@ -109,7 +136,8 @@ contract SlashingArbiter is EIP712, Ownable {
         uint8 v, bytes32 r, bytes32 s
     ) external {
         bytes32 structHash = keccak256(abi.encode(TRACE_FRAUD_TYPEHASH, nameHash, traceHash, submitter, expiry, salt));
-        _verify(structHash, traceValidator, expiry, v, r, s);
+        bytes32 digest = _hashTypedDataV4(structHash);
+        _verifyAndConsume(digest, traceValidator, expiry, v, r, s);
         Registry.Pythia memory p = registry.getPythia(nameHash);
         PythiaVault vault = PythiaVault(p.vault);
         uint256 half = vault.bond() / 2;
@@ -121,27 +149,66 @@ contract SlashingArbiter is EIP712, Ownable {
     }
 
     // -- Type 4: accuracy decay (delist, no slash) ------------------------
+    /// @dev Dual-sig same as type 1: bond > $10k requires co-sig.
     function delistAccuracyDecay(
         bytes32 nameHash,
         uint256 brierScaled,
         uint256 expiry,
         uint256 salt,
-        uint8 v, bytes32 r, bytes32 s
+        uint8 v, bytes32 r, bytes32 s,
+        uint8 v2, bytes32 r2, bytes32 s2
     ) external {
         bytes32 structHash = keccak256(abi.encode(DECAY_TYPEHASH, nameHash, brierScaled, expiry, salt));
-        _verify(structHash, automation, expiry, v, r, s);
+        bytes32 digest = _hashTypedDataV4(structHash);
+        _verifyAndConsume(digest, automation, expiry, v, r, s);
+        Registry.Pythia memory p = registry.getPythia(nameHash);
+        require(p.owner != address(0), "unknown pythia");
+        PythiaVault vault = PythiaVault(p.vault);
+        if (vault.bond() > DUAL_SIG_BOND_THRESHOLD) {
+            if (ecrecover(digest, v2, r2, s2) != traceValidator) revert NeedSecondAttestation();
+        }
         registry.recordSlash(nameHash, 4, 0);
         emit AccuracyDecayDelisted(nameHash, brierScaled);
     }
 
-    // -- Admin ------------------------------------------------------------
-    function setAutomation(address a) external onlyOwner { automation = a; }
-    function setTraceValidator(address a) external onlyOwner { traceValidator = a; }
+    // -- Admin: timelocked rotations --------------------------------------
+    /// @notice Step 1 — propose a new automation key. Takes effect after TIMELOCK.
+    function proposeAutomation(address a) external onlyOwner {
+        pendingAutomation = a;
+        automationEffectiveAt = uint64(block.timestamp) + TIMELOCK;
+        emit AutomationProposed(a, automationEffectiveAt);
+    }
+
+    /// @notice Step 2 — activate after the timelock elapses.
+    function activateAutomation() external onlyOwner {
+        if (automationEffectiveAt == 0) revert NoPendingChange();
+        if (block.timestamp < automationEffectiveAt) revert TimelockNotElapsed();
+        address activated = pendingAutomation;
+        automation = activated;
+        pendingAutomation = address(0);
+        automationEffectiveAt = 0;
+        emit AutomationActivated(activated);
+    }
+
+    function proposeTraceValidator(address a) external onlyOwner {
+        pendingTraceValidator = a;
+        traceValidatorEffectiveAt = uint64(block.timestamp) + TIMELOCK;
+        emit TraceValidatorProposed(a, traceValidatorEffectiveAt);
+    }
+
+    function activateTraceValidator() external onlyOwner {
+        if (traceValidatorEffectiveAt == 0) revert NoPendingChange();
+        if (block.timestamp < traceValidatorEffectiveAt) revert TimelockNotElapsed();
+        address activated = pendingTraceValidator;
+        traceValidator = activated;
+        pendingTraceValidator = address(0);
+        traceValidatorEffectiveAt = 0;
+        emit TraceValidatorActivated(activated);
+    }
 
     // -- Internal ---------------------------------------------------------
-    function _verify(bytes32 structHash, address signer, uint256 expiry, uint8 v, bytes32 r, bytes32 s) internal {
+    function _verifyAndConsume(bytes32 digest, address signer, uint256 expiry, uint8 v, bytes32 r, bytes32 s) internal {
         if (block.timestamp > expiry) revert AttestationExpired();
-        bytes32 digest = _hashTypedDataV4(structHash);
         if (usedAttestations[digest]) revert AttestationReplay();
         if (ecrecover(digest, v, r, s) != signer) revert InvalidSignature();
         usedAttestations[digest] = true;

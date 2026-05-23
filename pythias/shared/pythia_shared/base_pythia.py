@@ -147,14 +147,17 @@ class BasePythia(ABC):
         except Exception as e:
             log.warning("[%s] mirror POST failed: %s", self.name, e)
 
-        # Open vault position
+        # Open vault position. Nonce is derived from the trace hash so an RPC
+        # retry of the same forecast intent reuses the same on-chain nonce and
+        # the vault's replay guard collapses duplicates into a single position.
         if self.vault_addr:
             amt = self.decide_position_amount(brain, market)
             if amt > 0:
                 yes = brain.prob >= 0.5
+                position_nonce = trace_hash  # already 32 bytes (keccak256 output)
                 try:
                     pos_tx = self.client.open_vault_position(
-                        self.vault_addr, market_id, yes, amt, prob_scaled
+                        self.vault_addr, market_id, yes, amt, prob_scaled, position_nonce
                     )
                     log.info("[%s] openPosition tx=%s amt=%d yes=%s", self.name, pos_tx, amt, yes)
                 except Exception as e:

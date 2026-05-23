@@ -46,6 +46,7 @@ VAULT_ABI = [
             {"name": "yes", "type": "bool"},
             {"name": "amount", "type": "uint256"},
             {"name": "prob", "type": "uint256"},
+            {"name": "nonce", "type": "bytes32"},
         ],
         "outputs": [{"name": "positionId", "type": "uint256"}],
     },
@@ -93,12 +94,25 @@ class RegistryClient:
         return self._wait(h)
 
     def open_vault_position(
-        self, vault_addr: str, market_id: bytes, yes: bool, amount: int, prob: int
+        self,
+        vault_addr: str,
+        market_id: bytes,
+        yes: bool,
+        amount: int,
+        prob: int,
+        position_nonce: bytes,
     ) -> str:
+        """`position_nonce` is the per-intent replay guard consumed by the
+        vault. Reuse the SAME nonce when retrying the same logical intent
+        (e.g. on RPC timeout); pick a fresh one for a genuinely new position."""
+        if len(position_nonce) != 32:
+            raise ValueError("position_nonce must be 32 bytes")
         vault = self.w3.eth.contract(
             address=Web3.to_checksum_address(vault_addr), abi=VAULT_ABI
         )
-        tx = vault.functions.openPosition(market_id, yes, amount, prob).build_transaction({
+        tx = vault.functions.openPosition(
+            market_id, yes, amount, prob, position_nonce
+        ).build_transaction({
             "from": self.daemon.address,
             "nonce": self.w3.eth.get_transaction_count(self.daemon.address, "pending"),
             "chainId": self.chain_id,

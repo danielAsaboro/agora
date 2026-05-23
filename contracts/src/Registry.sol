@@ -38,7 +38,8 @@ contract Registry is Ownable {
         bytes32 indexed marketId,
         uint256 prob,             // 1e18 fixed-point
         bytes32 traceHash,        // Irys-anchored reasoning trace
-        uint64  blockTime
+        uint64  blockTime,
+        address daemon            // signer wallet at emit time
     );
     event PythiaSlashed(
         bytes32 indexed nameHash,
@@ -47,12 +48,15 @@ contract Registry is Ownable {
     );
     event PythiaDelisted(bytes32 indexed nameHash, uint8 reason);
     event ManifestUpdated(bytes32 indexed nameHash, bytes32 oldHash, bytes32 newHash);
+    event DaemonRotated(bytes32 indexed nameHash, address indexed oldDaemon, address indexed newDaemon);
 
     error NameAlreadyRegistered();
     error UnknownPythia();
     error CallerNotOwner();
     error CallerNotDaemon();
     error CallerNotArbiter();
+    error CallerNotVault();
+    error StaleOldDaemon();
     error TraceReplayed();
     error AlreadyDelisted();
     error ArbiterAlreadyLocked();
@@ -118,7 +122,7 @@ contract Registry is Ownable {
         if (usedTraceHashes[traceHash]) revert TraceReplayed();
         usedTraceHashes[traceHash] = true;
         p.lastForecastAt = uint64(block.timestamp);
-        emit ForecastEmitted(nameHash, marketId, prob, traceHash, uint64(block.timestamp));
+        emit ForecastEmitted(nameHash, marketId, prob, traceHash, uint64(block.timestamp), msg.sender);
     }
 
     function updateManifest(bytes32 nameHash, bytes32 newHash, bytes32 newMandateRoot) external {
@@ -131,10 +135,16 @@ contract Registry is Ownable {
         emit ManifestUpdated(nameHash, old, newHash);
     }
 
-    function rotateDaemon(bytes32 nameHash, address newDaemon) external {
+    /// @notice Called by the Pythia's vault when the owner rotates the daemon key.
+    /// Keeps Registry's daemon authoritative for `emitForecast` checks and gives
+    /// indexers a single event to track the daemon set without re-reading state.
+    function recordDaemonRotation(bytes32 nameHash, address oldDaemon, address newDaemon) external {
         Pythia storage p = pythias[nameHash];
-        if (msg.sender != p.owner) revert CallerNotOwner();
+        if (p.owner == address(0)) revert UnknownPythia();
+        if (msg.sender != p.vault) revert CallerNotVault();
+        if (p.daemon != oldDaemon) revert StaleOldDaemon();
         p.daemon = newDaemon;
+        emit DaemonRotated(nameHash, oldDaemon, newDaemon);
     }
 
     // -- Arbiter-only slashing notifications -------------------------------

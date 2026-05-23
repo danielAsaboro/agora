@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./interfaces/IPredictionMarket.sol";
+import "./Registry.sol";
 
 /// @title PythiaVault
 /// @notice Per-Pythia vault. Splits a single underlying (USDC) into two pools:
@@ -37,8 +38,17 @@ contract PythiaVault is ERC20, Ownable, ReentrancyGuard {
     uint256 public bond;
     /// @notice Configured floor below which the Pythia is auto-delisted.
     uint256 public bondFloor;
-    /// @notice Cumulative stake principal. Useful for diagnostics; not used in NAV math.
+    /// @notice Net stake principal (incremented on stake, decremented pro-rata on redeem).
     uint256 public stakePrincipal;
+
+    /// @notice Dead-share lock against ERC-4626 donation-inflation attack.
+    /// On first stake, this many shares are minted to address(0xdEaD) so the
+    /// supply can never be 1, defeating the classic round-down dilution.
+    uint256 internal constant DEAD_SHARES = 1e6;
+    /// @notice Minimum stake (1 USDC) — prevents 1-wei griefing of pendingRedeems.
+    uint256 internal constant MIN_STAKE = 1e6;
+    /// @notice Dead address that receives the locked initial shares.
+    address internal constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
 
     /// @notice Per-share NAV is computed as freeStake() / totalSupply().
     /// @notice Withdrawal queue: a 24h cooldown to prevent stake fleeing right before resolution.
@@ -58,10 +68,15 @@ contract PythiaVault is ERC20, Ownable, ReentrancyGuard {
     }
     uint256 public nextPositionId;
     mapping(uint256 => Position) public positions;
+    /// @notice Replay-guard for daemon-signed openPosition calls.
+    /// Key = keccak256(marketId, yes, amount, nonce). Daemon supplies the nonce.
+    mapping(bytes32 => bool) public usedPositionNonces;
 
     /// @notice Owner-fee bps on accrued NAV uplift since last claim. Default 1000 = 10%.
     uint256 public ownerFeeBps = 1000;
-    uint256 public lastFreeStakeSnapshot;
+    /// @notice Per-share high-water mark (1e18 fixed-point). Owner only earns
+    /// on NAV gains above this peak — staker actions cannot reset it.
+    uint256 public lastNAVHighWater = 1e18;
     uint256 public accruedOwnerFees;
 
     event BondPosted(address indexed owner, uint256 amount, uint256 newBond);
@@ -70,11 +85,12 @@ contract PythiaVault is ERC20, Ownable, ReentrancyGuard {
     event Staked(address indexed user, uint256 quoteIn, uint256 sharesOut);
     event RedeemQueued(address indexed user, uint256 shares, uint64 availableAt);
     event Redeemed(address indexed user, uint256 shares, uint256 quoteOut);
-    event PositionOpened(uint256 indexed positionId, bytes32 indexed marketId, bool yes, uint256 amount);
+    event PositionOpened(uint256 indexed positionId, bytes32 indexed marketId, bool yes, uint256 amount, bytes32 nonce);
     event PositionClosed(uint256 indexed positionId, uint256 returned);
     event BuilderFeesClaimed(uint256 amount);
     event OwnerFeesAccrued(uint256 amount);
     event OwnerFeesPaid(uint256 amount);
+    event DaemonRotated(address indexed oldDaemon, address indexed newDaemon);
 
     error CallerNotDaemon();
     error CallerNotArbiter();
@@ -84,6 +100,9 @@ contract PythiaVault is ERC20, Ownable, ReentrancyGuard {
     error RedeemNotReady();
     error NothingToRedeem();
     error InvalidShares();
+    error BelowMinStake();
+    error FirstStakeTooSmall();
+    error PositionReplayed();
 
     modifier onlyDaemon() {
         if (msg.sender != daemon) revert CallerNotDaemon();
@@ -167,16 +186,25 @@ contract PythiaVault is ERC20, Ownable, ReentrancyGuard {
     }
 
     function stake(uint256 quoteIn) external nonReentrant returns (uint256 sharesOut) {
+        if (quoteIn < MIN_STAKE) revert BelowMinStake();
         _accrueOwnerFees();
         quote.safeTransferFrom(msg.sender, address(this), quoteIn);
         uint256 supply = totalSupply();
-        // Compute shares against the pre-deposit freeStake (we just topped it up
-        // so subtract quoteIn to keep math fair).
-        uint256 freePre = freeStake() - quoteIn;
-        sharesOut = supply == 0 ? quoteIn : (quoteIn * supply) / (freePre == 0 ? quoteIn : freePre);
+        if (supply == 0) {
+            // V2-style dead-share lock. First user pays the DEAD_SHARES cost so
+            // that no later staker can ever face the supply==1 inflation attack.
+            if (quoteIn <= DEAD_SHARES) revert FirstStakeTooSmall();
+            _mint(DEAD_ADDRESS, DEAD_SHARES);
+            sharesOut = quoteIn - DEAD_SHARES;
+        } else {
+            // Compute shares against the pre-deposit freeStake (we just topped
+            // it up so subtract quoteIn to keep math fair).
+            uint256 freePre = freeStake() - quoteIn;
+            sharesOut = (quoteIn * supply) / (freePre == 0 ? quoteIn : freePre);
+        }
+        if (sharesOut == 0) revert InvalidShares();
         _mint(msg.sender, sharesOut);
         stakePrincipal += quoteIn;
-        lastFreeStakeSnapshot = freeStake();
         emit Staked(msg.sender, quoteIn, sharesOut);
     }
 
@@ -199,6 +227,11 @@ contract PythiaVault is ERC20, Ownable, ReentrancyGuard {
         uint256 free = freeStake();
         quoteOut = (q.shares * free) / supply;
         if (quoteOut > free) revert InsufficientFreeStake();
+        // Pro-rata reduce stakePrincipal so the leaderboard's "AUM" stat
+        // tracks net principal instead of drifting upward forever.
+        uint256 principalShare = (q.shares * stakePrincipal) / supply;
+        if (principalShare > stakePrincipal) principalShare = stakePrincipal;
+        stakePrincipal -= principalShare;
         _burn(address(this), q.shares);
         delete pendingRedeems[msg.sender];
         quote.safeTransfer(msg.sender, quoteOut);
@@ -206,19 +239,25 @@ contract PythiaVault is ERC20, Ownable, ReentrancyGuard {
     }
 
     // -- Positions ----------------------------------------------------------
-    function openPosition(bytes32 marketId, bool yes, uint256 amount, uint256 prob)
+    function openPosition(bytes32 marketId, bool yes, uint256 amount, uint256 prob, bytes32 nonce)
         external
         onlyDaemon
         nonReentrant
         returns (uint256 positionId)
     {
+        // Replay-guard: a network retry on a transient RPC error must not
+        // double-open the same position. Daemon picks a fresh nonce per intent.
+        bytes32 key = keccak256(abi.encode(marketId, yes, amount, nonce));
+        if (usedPositionNonces[key]) revert PositionReplayed();
+        usedPositionNonces[key] = true;
+
         if (amount > freeStake()) revert InsufficientFreeStake();
         quote.forceApprove(address(market), amount);
         // builderCode = this vault (so fees flow back to stake pool)
         uint256 externalId = market.openPosition(marketId, yes, amount, prob, address(this));
         positionId = ++nextPositionId;
         positions[positionId] = Position({marketId: marketId, amount: amount, yes: yes, closed: false});
-        emit PositionOpened(positionId, marketId, yes, amount);
+        emit PositionOpened(positionId, marketId, yes, amount, nonce);
         // record externalId off-chain via Position event — kept simple here.
         externalId; // silence warning
     }
@@ -245,21 +284,33 @@ contract PythiaVault is ERC20, Ownable, ReentrancyGuard {
         emit OwnerFeesPaid(amt);
     }
 
+    /// @notice Owner can rotate the daemon wallet. Also syncs Registry so that
+    /// off-chain indexers and Registry.emitForecast keep recognizing the new key.
     function rotateDaemon(address newDaemon) external onlyOwner {
+        address old = daemon;
         daemon = newDaemon;
+        Registry(registry).recordDaemonRotation(nameHash, old, newDaemon);
+        emit DaemonRotated(old, newDaemon);
     }
 
     // -- Internal ----------------------------------------------------------
+    /// @dev Per-share high-water mark prevents staker actions (which move
+    /// freeStake proportionally to totalSupply) from gaming the fee base.
+    /// Owner only earns owner-fee bps on NAV uplift above the prior peak.
     function _accrueOwnerFees() internal {
-        uint256 cur = freeStake();
-        if (cur > lastFreeStakeSnapshot) {
-            uint256 gain = cur - lastFreeStakeSnapshot;
-            uint256 fee = (gain * ownerFeeBps) / 10_000;
-            accruedOwnerFees += fee;
-            lastFreeStakeSnapshot = cur - fee;
-            emit OwnerFeesAccrued(fee);
-        } else {
-            lastFreeStakeSnapshot = cur;
-        }
+        uint256 supply = totalSupply();
+        if (supply == 0) return;
+        uint256 curNav = nav();
+        if (curNav <= lastNAVHighWater) return;
+        uint256 deltaNav = curNav - lastNAVHighWater;
+        // gain (in quote units) attributable to the NAV uplift across all shares.
+        uint256 gain = (deltaNav * supply) / 1e18;
+        uint256 fee = (gain * ownerFeeBps) / 10_000;
+        if (fee == 0) return;
+        accruedOwnerFees += fee;
+        // After accrual, freeStake drops by `fee`, so NAV drops by fee*1e18/supply.
+        // Bump the high-water to the post-fee NAV so future calls don't double-pay.
+        lastNAVHighWater = curNav - ((fee * 1e18) / supply);
+        emit OwnerFeesAccrued(fee);
     }
 }

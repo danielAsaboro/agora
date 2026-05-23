@@ -71,6 +71,7 @@ export const RegistryAbi = [
       { name: "prob", type: "uint256", indexed: false },
       { name: "traceHash", type: "bytes32", indexed: false },
       { name: "blockTime", type: "uint64", indexed: false },
+      { name: "daemon", type: "address", indexed: false },
     ],
   },
   {
@@ -81,6 +82,26 @@ export const RegistryAbi = [
       { name: "slashType", type: "uint8", indexed: false },
       { name: "amount", type: "uint256", indexed: false },
     ],
+  },
+  {
+    type: "event",
+    name: "DaemonRotated",
+    inputs: [
+      { name: "nameHash", type: "bytes32", indexed: true },
+      { name: "oldDaemon", type: "address", indexed: true },
+      { name: "newDaemon", type: "address", indexed: true },
+    ],
+  },
+  {
+    type: "function",
+    name: "recordDaemonRotation",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "nameHash", type: "bytes32" },
+      { name: "oldDaemon", type: "address" },
+      { name: "newDaemon", type: "address" },
+    ],
+    outputs: [],
   },
 ] as const;
 
@@ -98,7 +119,24 @@ export const PythiaVaultAbi = [
       { name: "yes", type: "bool" },
       { name: "amount", type: "uint256" },
       { name: "prob", type: "uint256" },
+      { name: "nonce", type: "bytes32" },
     ], outputs: [{ name: "positionId", type: "uint256" }] },
+  { type: "function", name: "rotateDaemon", stateMutability: "nonpayable",
+    inputs: [{ name: "newDaemon", type: "address" }], outputs: [] },
+  { type: "function", name: "daemon", stateMutability: "view",
+    inputs: [], outputs: [{ type: "address" }] },
+  { type: "function", name: "freeStake", stateMutability: "view",
+    inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "accruedOwnerFees", stateMutability: "view",
+    inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "stakePrincipal", stateMutability: "view",
+    inputs: [], outputs: [{ type: "uint256" }] },
+  { type: "function", name: "pendingRedeems", stateMutability: "view",
+    inputs: [{ name: "user", type: "address" }],
+    outputs: [
+      { name: "shares", type: "uint256" },
+      { name: "availableAt", type: "uint64" },
+    ] },
   { type: "function", name: "closePosition", stateMutability: "nonpayable",
     inputs: [{ name: "positionId", type: "uint256" }], outputs: [] },
   { type: "function", name: "claimBuilderFees", stateMutability: "nonpayable",
@@ -122,6 +160,11 @@ export const PythiaVaultAbi = [
       { name: "marketId", type: "bytes32", indexed: true },
       { name: "yes", type: "bool", indexed: false },
       { name: "amount", type: "uint256", indexed: false },
+      { name: "nonce", type: "bytes32", indexed: false },
+    ] },
+  { type: "event", name: "DaemonRotated", inputs: [
+      { name: "oldDaemon", type: "address", indexed: true },
+      { name: "newDaemon", type: "address", indexed: true },
     ] },
   { type: "event", name: "PositionClosed", inputs: [
       { name: "positionId", type: "uint256", indexed: true },
