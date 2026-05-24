@@ -1,30 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { keccak256, toHex, parseUnits, encodeFunctionData, stringToBytes } from "viem";
-import { serviceSupabase } from "@/lib/supabase";
-import { publicClient, walletClient } from "@/lib/viem";
-import { PythiaVaultFactoryAbi, Erc20Abi } from "@/lib/abis";
-import { env } from "@/lib/env";
-import { manifestHash, mandateRoot } from "@/lib/manifest";
+import { keccak256, stringToBytes, parseUnits } from "viem";
+import { prisma, hexToBuf } from "@/lib/db";
 import { pushTraction } from "@/lib/traction";
-import type { Manifest } from "@/lib/types";
 
 const schema = z.object({
   name: z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/),
   description: z.string().max(280).optional().default(""),
   mandateCategories: z.array(z.string()).min(1),
-  bondFloor: z.string(),     // USDC, decimal
+  bondFloor: z.string(),
   initialBond: z.string(),
-  daemonAddress: z.string().optional(),
+  ownerAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  daemonAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  vaultAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).nullable().optional(),
+  txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  blockNumber: z.string().optional(),
+  manifestHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  mandateRoot: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  circleWalletId: z.string().nullable().optional(),
 });
 
+/// POST /api/pythias — Postgres mirror for the client-signed createPythia tx.
+/// The on-chain createPythia call is signed in the browser via wagmi (see
+/// app/(auth)/register/page.tsx). The indexer is the source of truth for
+/// vault_address (resolved by event); this endpoint provides instant UI.
 export async function POST(req: NextRequest) {
   let body: z.infer<typeof schema>;
-  try {
-    body = schema.parse(await req.json());
-  } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
-  }
+  try { body = schema.parse(await req.json()); }
+  catch (err) { return NextResponse.json({ error: (err as Error).message }, { status: 400 }); }
 
   const bondFloorWei = parseUnits(body.bondFloor, 6);
   const initialBondWei = parseUnits(body.initialBond, 6);
@@ -32,97 +35,56 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "initialBond < bondFloor" }, { status: 400 });
   }
 
-  // For MVP: use the platform's deployer wallet as the registering owner.
-  // Real flow: connect user wallet (RainbowKit) and have them sign locally.
-  const deployerPk = process.env.DEPLOYER_PK as `0x${string}` | undefined;
-  if (!deployerPk) {
-    return NextResponse.json({ error: "DEPLOYER_PK missing" }, { status: 500 });
-  }
-  const wallet = walletClient(deployerPk);
-  const pub = publicClient();
-  const daemon = (body.daemonAddress as `0x${string}` | undefined) ?? wallet.account.address;
-
-  const manifest: Manifest = {
-    name: body.name,
-    owner: wallet.account.address,
-    daemon,
-    description: body.description,
-    modelFingerprint: "openai:gpt-4o-mini",
-    mandateCategories: body.mandateCategories,
-    targetMarkets: [],
-    accuracyMetric: "brier",
-    slashingFloorBps: 0,
-    bondFloor: bondFloorWei.toString(),
-    framework: "tradingagents@0.2.4",
-    createdAt: new Date().toISOString(),
-  };
-  const mHash = manifestHash(manifest);
-  const mRoot = mandateRoot(body.mandateCategories);
-
-  // Approve factory to pull initial bond
-  const factoryAddr = env.factory() as `0x${string}`;
-  const usdcAddr = env.usdc() as `0x${string}`;
-  const approveHash = await wallet.writeContract({
-    address: usdcAddr,
-    abi: Erc20Abi,
-    functionName: "approve",
-    args: [factoryAddr, initialBondWei],
-  });
-  await pub.waitForTransactionReceipt({ hash: approveHash });
-
-  const createHash = await wallet.writeContract({
-    address: factoryAddr,
-    abi: PythiaVaultFactoryAbi,
-    functionName: "createPythia",
-    args: [
-      body.name,
-      daemon as `0x${string}`,
-      "0x0000000000000000000000000000000000000000",
-      mHash,
-      mRoot,
-      bondFloorWei,
-      initialBondWei,
-    ],
-  });
-  const receipt = await pub.waitForTransactionReceipt({ hash: createHash });
-
-  // Decode the VaultCreated event from the receipt logs
-  const vaultEvent = receipt.logs.find((l) => l.address.toLowerCase() === factoryAddr.toLowerCase());
   const nameHash = keccak256(stringToBytes(body.name));
+  const nameHashBuf = hexToBuf(nameHash);
 
-  // For MVP we re-derive vault by post-receipt registry lookup; skip here and let indexer fill it.
-  const sb = serviceSupabase();
-  await sb.from("pythias").upsert({
-    name_hash: hexToBytea(nameHash),
-    name: body.name,
-    owner_address: wallet.account.address,
-    daemon_address: daemon,
-    vault_address: vaultEvent ? "0x" + vaultEvent.topics[1]?.slice(26) : "0x0000000000000000000000000000000000000000",
-    manifest_hash: hexToBytea(mHash),
-    mandate_root: hexToBytea(mRoot),
-    mandate_categories: body.mandateCategories,
-    bond_floor: bondFloorWei.toString(),
-    bond_balance: initialBondWei.toString(),
-    description: body.description,
+  await prisma.pythia.upsert({
+    where: { nameHash: nameHashBuf },
+    update: {
+      ownerAddress: body.ownerAddress,
+      daemonAddress: body.daemonAddress,
+      vaultAddress: body.vaultAddress ?? null,
+      mandateCategories: body.mandateCategories,
+      bondFloor: bondFloorWei.toString(),
+      bondBalance: initialBondWei.toString(),
+      description: body.description,
+      circleWalletId: body.circleWalletId ?? null,
+    },
+    create: {
+      nameHash: nameHashBuf,
+      name: body.name,
+      ownerAddress: body.ownerAddress,
+      daemonAddress: body.daemonAddress,
+      vaultAddress: body.vaultAddress ?? null,
+      manifestHash: hexToBuf(body.manifestHash),
+      mandateRoot: hexToBuf(body.mandateRoot),
+      mandateCategories: body.mandateCategories,
+      bondFloor: bondFloorWei.toString(),
+      bondBalance: initialBondWei.toString(),
+      description: body.description,
+      circleWalletId: body.circleWalletId ?? null,
+    },
   });
 
   await pushTraction({
     kind: "pythia_registered",
     nameHashHex: nameHash.slice(2),
-    actor: wallet.account.address,
-    payload: { name: body.name, initialBond: body.initialBond },
+    actor: body.ownerAddress,
+    payload: {
+      name: body.name,
+      initialBond: body.initialBond,
+      daemon: body.daemonAddress,
+      circleWalletId: body.circleWalletId ?? null,
+      txHash: body.txHash,
+    },
   });
 
   return NextResponse.json({
     ok: true,
     name: body.name,
     nameHash,
-    manifestHash: mHash,
-    mandateRoot: mRoot,
-    txHash: createHash,
+    manifestHash: body.manifestHash,
+    mandateRoot: body.mandateRoot,
+    txHash: body.txHash,
   });
-}
-
-function hexToBytea(hex: `0x${string}`): string {
-  return `\\x${hex.slice(2)}`;
 }

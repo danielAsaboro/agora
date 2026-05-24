@@ -583,6 +583,50 @@ contract E2ETest is Test {
         assertEq(vault.bond(), bondBefore - bondBefore / 4, "25% burn after dual-sig");
     }
 
+    // ============================================================
+    //  FUZZ — stake/redeem round-trip preserves principal within rounding
+    // ============================================================
+    // Property: for any staking amount in the supported range, a single
+    // staker who deposits then redeems all shares walks away with at most
+    // their principal and at least principal minus the dead-share lock
+    // (DEAD_SHARES = 1e6 USDC base units) plus 1 wei rounding tolerance.
+    // No PnL, no fees → no NAV uplift, so the redemption equals stake
+    // modulo the dead-share lock taken on the very first stake.
+    function testFuzz_stakeRedeemRoundTrip(uint96 amt) public {
+        vm.assume(amt >= 2e6 && amt <= 100_000e6);
+
+        bytes32 nameHash;
+        address vaultAddr;
+        vm.startPrank(owner);
+        usdc.approve(address(factory), 2_000e6);
+        (vaultAddr, nameHash) = factory.createPythia(
+            "apollo-fz", daemon, address(0), keccak256("M"), keccak256("R"), 100e6, 2_000e6
+        );
+        vm.stopPrank();
+        PythiaVault vault = PythiaVault(vaultAddr);
+
+        // Ensure the fuzzer has at least `amt` to stake.
+        usdc.transfer(staker1, amt);
+
+        vm.startPrank(staker1);
+        usdc.approve(vaultAddr, amt);
+        uint256 shares = vault.stake(amt);
+        vault.queueRedeem(shares);
+        vm.stopPrank();
+
+        skip(24 hours + 1);
+
+        vm.prank(staker1);
+        uint256 quoteOut = vault.redeem();
+
+        // Invariant 1: cannot magically gain on a round-trip without PnL/fees.
+        assertLe(quoteOut, amt, "round-trip cannot exceed principal");
+
+        // Invariant 2: lose at most DEAD_SHARES (1e6) + 1 wei rounding.
+        // The 1 wei comes from share-math floor() on (shares * freeStake / totalSupply).
+        assertGe(quoteOut + 1e6 + 1, amt, "round-trip preserves principal mod dead-share lock");
+    }
+
     // -- EIP-712 digest helper that matches SlashingArbiter's domain
     function _hashTypedDataV4(bytes32 structHash) internal view returns (bytes32) {
         return keccak256(abi.encodePacked("\x19\x01", arbiter.DOMAIN_SEPARATOR(), structHash));

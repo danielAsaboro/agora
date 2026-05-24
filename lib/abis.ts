@@ -191,6 +191,16 @@ export const PythiaVaultFactoryAbi = [
       { name: "nameHash", type: "bytes32" },
     ],
   },
+  {
+    type: "event",
+    name: "VaultCreated",
+    inputs: [
+      { name: "nameHash", type: "bytes32", indexed: true },
+      { name: "name", type: "string", indexed: false },
+      { name: "owner", type: "address", indexed: true },
+      { name: "vault", type: "address", indexed: false },
+    ],
+  },
 ] as const;
 
 export const Erc20Abi = [
@@ -201,4 +211,6 @@ export const Erc20Abi = [
     inputs: [{ name: "account", type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "decimals", stateMutability: "view",
     inputs: [], outputs: [{ type: "uint8" }] },
+  { type: "function", name: "faucet", stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }], outputs: [] },
 ] as const;

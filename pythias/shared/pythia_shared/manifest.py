@@ -10,7 +10,7 @@ from eth_abi import encode as abi_encode
 
 @dataclass
 class TargetMarket:
-    source: str            # "polymarket" | "limitless" | "mock"
+    source: str            # "polymarket" | "limitless" | "manifold" | "oddsapi" | "hephaestus_arc"
     label: str
     marketIdHex: str
 

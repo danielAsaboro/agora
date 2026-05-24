@@ -11,33 +11,31 @@
  *  - tsx indexer/worker.ts --once     (single pass; for cron)
  */
 import "dotenv/config";
-import { keccak256, stringToBytes, parseAbiItem } from "viem";
+import { parseAbiItem } from "viem";
 import { publicClient } from "../lib/viem";
-import { RegistryAbi, PythiaVaultAbi } from "../lib/abis";
 import { env } from "../lib/env";
-import { serviceSupabase } from "../lib/supabase";
+import { prisma, hexToBuf } from "../lib/db";
 import { pushTraction } from "../lib/traction";
 
 const REGISTRY = env.registry() as `0x${string}`;
 
-interface CursorRow { name: string; block: bigint }
-
 async function getCursor(name: string): Promise<bigint> {
-  const sb = serviceSupabase();
-  const { data } = await sb.from("indexer_cursor").select("block").eq("name", name).maybeSingle();
-  return data?.block ? BigInt(data.block) : 0n;
+  const row = await prisma.indexerCursor.findUnique({ where: { name } });
+  return row?.block ?? 0n;
 }
 
 async function setCursor(name: string, block: bigint) {
-  const sb = serviceSupabase();
-  await sb.from("indexer_cursor").upsert({ name, block: block.toString() }, { onConflict: "name" });
+  await prisma.indexerCursor.upsert({
+    where: { name },
+    update: { block },
+    create: { name, block },
+  });
 }
 
 async function processRegistryEvents(fromBlock: bigint, toBlock: bigint) {
-  const sb = serviceSupabase();
   const client = publicClient();
 
-  // Registered
+  // PythiaRegistered
   const regLogs = await client.getLogs({
     address: REGISTRY,
     event: parseAbiItem(
@@ -47,47 +45,68 @@ async function processRegistryEvents(fromBlock: bigint, toBlock: bigint) {
     toBlock,
   });
   for (const lg of regLogs) {
-    const args = lg.args as any;
-    await sb.from("pythias").upsert({
-      name_hash: hexToBytea(args.nameHash),
-      name: args.name,
-      owner_address: args.owner,
-      vault_address: args.vault,
-      daemon_address: args.owner,
-      manifest_hash: hexToBytea(args.manifestHash),
-      mandate_root: "\\x" + "00".repeat(32), // filled from /api/pythias mirror
-      bond_floor: args.bondFloor.toString(),
-      bond_balance: args.bondFloor.toString(),
-      mandate_categories: [],
-    }, { onConflict: "name_hash" });
+    const args = (lg as any).args as any;
+    const nameHash = hexToBuf(args.nameHash);
+    await prisma.pythia.upsert({
+      where: { nameHash },
+      update: {
+        vaultAddress: args.vault,
+        bondBalance: args.bondFloor.toString(),
+      },
+      create: {
+        nameHash,
+        name: args.name,
+        ownerAddress: args.owner,
+        daemonAddress: args.owner,
+        vaultAddress: args.vault,
+        manifestHash: hexToBuf(args.manifestHash),
+        mandateRoot: Buffer.alloc(32), // filled from /api/pythias mirror
+        bondFloor: args.bondFloor.toString(),
+        bondBalance: args.bondFloor.toString(),
+        mandateCategories: [],
+      },
+    });
   }
 
   // ForecastEmitted
   const fcLogs = await client.getLogs({
     address: REGISTRY,
     event: parseAbiItem(
-      "event ForecastEmitted(bytes32 indexed nameHash, bytes32 indexed marketId, uint256 prob, bytes32 traceHash, uint64 blockTime, address daemon)"
+      "event ForecastEmitted(bytes32 indexed nameHash, bytes32 indexed marketId, uint256 prob, bytes32 traceHash, uint64 blockTime)"
     ) as any,
     fromBlock,
     toBlock,
   });
   for (const lg of fcLogs) {
-    const args = lg.args as any;
-    await sb.from("forecasts").upsert({
-      name_hash: hexToBytea(args.nameHash),
-      market_id: hexToBytea(args.marketId),
-      prob_scaled: args.prob.toString(),
-      trace_hash: hexToBytea(args.traceHash),
-      block_number: Number(lg.blockNumber),
-      block_time: new Date(Number(args.blockTime) * 1000).toISOString(),
-      tx_hash: hexToBytea(lg.transactionHash!),
-    }, { onConflict: "trace_hash" });
-    await sb.from("pythias")
-      .update({ last_forecast_at: new Date(Number(args.blockTime) * 1000).toISOString() })
-      .eq("name_hash", hexToBytea(args.nameHash));
+    const args = (lg as any).args as any;
+    const nameHash = hexToBuf(args.nameHash);
+    const traceHash = hexToBuf(args.traceHash);
+    const at = new Date(Number(args.blockTime) * 1000);
+    await prisma.forecast.upsert({
+      where: { traceHash },
+      update: {
+        probScaled: args.prob.toString(),
+        blockNumber: BigInt(lg.blockNumber!),
+        blockTime: at,
+        txHash: hexToBuf(lg.transactionHash!),
+      },
+      create: {
+        nameHash,
+        marketId: hexToBuf(args.marketId),
+        probScaled: args.prob.toString(),
+        traceHash,
+        blockNumber: BigInt(lg.blockNumber!),
+        blockTime: at,
+        txHash: hexToBuf(lg.transactionHash!),
+      },
+    });
+    await prisma.pythia.update({
+      where: { nameHash },
+      data: { lastForecastAt: at },
+    }).catch(() => { /* mirror is best-effort */ });
   }
 
-  // Slashed
+  // PythiaSlashed
   const slashLogs = await client.getLogs({
     address: REGISTRY,
     event: parseAbiItem(
@@ -97,75 +116,86 @@ async function processRegistryEvents(fromBlock: bigint, toBlock: bigint) {
     toBlock,
   });
   for (const lg of slashLogs) {
-    const args = lg.args as any;
-    await sb.from("slashings").insert({
-      name_hash: hexToBytea(args.nameHash),
-      slash_type: Number(args.slashType),
-      amount: args.amount.toString(),
-      block_number: Number(lg.blockNumber),
-      block_time: new Date().toISOString(),
-      tx_hash: hexToBytea(lg.transactionHash!),
+    const args = (lg as any).args as any;
+    await prisma.slashing.create({
+      data: {
+        nameHash: hexToBuf(args.nameHash),
+        slashType: Number(args.slashType),
+        amount: args.amount.toString(),
+        blockNumber: BigInt(lg.blockNumber!),
+        blockTime: new Date(),
+        txHash: hexToBuf(lg.transactionHash!),
+      },
     });
   }
 }
 
 async function resolveMarkets() {
-  // For the mock prediction market: scan markets table, ask on-chain status,
-  // and for any newly resolved market, update forecasts.brier_contribution.
-  const sb = serviceSupabase();
-  const { data: pending } = await sb.from("markets").select("*").eq("resolved", false);
-  if (!pending) return;
-  // Stubbed: real impl reads MockPredictionMarket.marketStatus() per market_id.
-  // For the demo we assume an external operator marks `markets.resolved=true`
-  // through the admin endpoint or by direct SQL.
+  // Scan markets table, find newly-resolved ones, update forecasts.brier.
+  const pending = await prisma.market.findMany({ where: { resolved: true } });
   for (const m of pending) {
-    // skip if not yet resolved
-    if (!m.resolved) continue;
-    const outcomeYes = !!m.outcome_yes;
-    const { data: forecasts } = await sb.from("forecasts").select("*").eq("market_id", m.market_id);
-    for (const f of forecasts ?? []) {
-      const p = Number(f.prob_scaled) / 1e18;
+    const forecasts = await prisma.forecast.findMany({
+      where: { marketId: m.marketId, marketResolved: false },
+    });
+    if (!forecasts.length) continue;
+    const outcomeYes = !!m.outcomeYes;
+    for (const f of forecasts) {
+      const p = Number(f.probScaled.toString()) / 1e18;
       const o = outcomeYes ? 1 : 0;
       const brier = (p - o) ** 2;
-      await sb.from("forecasts").update({
-        market_resolved: true,
-        market_outcome_yes: outcomeYes,
-        brier_contribution: brier,
-      }).eq("id", f.id);
+      await prisma.forecast.update({
+        where: { id: f.id },
+        data: {
+          marketResolved: true,
+          marketOutcomeYes: outcomeYes,
+          brierContribution: brier,
+        },
+      });
     }
     await pushTraction({
       kind: "resolved",
-      payload: { marketId: m.market_id, outcomeYes },
+      payload: { marketIdHex: "0x" + Buffer.from(m.marketId).toString("hex"), outcomeYes },
     });
   }
 }
 
+interface AccuracyRow {
+  name_hash: Buffer;
+  resolved_count: bigint;
+  brier_avg_all: number | null;
+  brier_avg_30d: number | null;
+}
+
 async function recomputeRanks() {
   // agoraRank = 0.5*(1 - mean_brier_30d) + 0.3*log10(builder_fees+1) + 0.2*log10(forecasts+1)
-  const sb = serviceSupabase();
-  const { data: rows } = await sb.from("pythia_accuracy").select("*");
-  for (const r of rows ?? []) {
+  const rows = await prisma.$queryRaw<AccuracyRow[]>`
+    SELECT
+      p.name_hash,
+      COUNT(f.id) FILTER (WHERE f.market_resolved)::bigint AS resolved_count,
+      AVG(f.brier_contribution) FILTER (WHERE f.market_resolved) AS brier_avg_all,
+      AVG(f.brier_contribution) FILTER (
+        WHERE f.market_resolved AND f.block_time > NOW() - INTERVAL '30 days'
+      ) AS brier_avg_30d
+    FROM pythias p
+    LEFT JOIN forecasts f ON f.name_hash = p.name_hash
+    GROUP BY p.name_hash
+  `;
+  for (const r of rows) {
     const brier = r.brier_avg_30d ?? r.brier_avg_all ?? 0.25;
     const accuracy = 1 - Math.min(1, Math.max(0, Number(brier)));
     const fees = await sumBuilderFees(r.name_hash);
-    const fc = Number(r.resolved_count ?? 0);
+    const fc = Number(r.resolved_count ?? 0n);
     const rank = 0.5 * accuracy + 0.3 * Math.log10(1 + fees / 1e6) + 0.2 * Math.log10(1 + fc);
-    await sb.from("pythias").update({
-      agora_rank: rank,
-      brier_30d: brier,
-    }).eq("name_hash", r.name_hash);
+    await prisma.pythia.update({
+      where: { nameHash: r.name_hash },
+      data: { agoraRank: rank, brier30d: brier },
+    });
   }
 }
 
-async function sumBuilderFees(nameHashBytea: string): Promise<number> {
-  const sb = serviceSupabase();
-  const { data } = await sb.from("builder_fees").select("amount").eq("name_hash", nameHashBytea);
-  return (data ?? []).reduce((s, r) => s + Number(r.amount), 0);
-}
-
-function hexToBytea(hex: `0x${string}` | string): string {
-  const clean = hex.toString().startsWith("0x") ? hex.toString().slice(2) : hex.toString();
-  return `\\x${clean}`;
+async function sumBuilderFees(nameHash: Buffer): Promise<number> {
+  const fees = await prisma.builderFee.findMany({ where: { nameHash }, select: { amount: true } });
+  return fees.reduce((s, r) => s + Number(r.amount.toString()), 0);
 }
 
 async function tick() {
@@ -173,8 +203,8 @@ async function tick() {
   const latest = await client.getBlockNumber();
   const cursor = await getCursor("registry");
   if (latest > cursor) {
-    const from = cursor === 0n ? latest - 1000n : cursor + 1n;
-    await processRegistryEvents(from < 0n ? 0n : from, latest);
+    const from = cursor === 0n ? (latest > 1000n ? latest - 1000n : 0n) : cursor + 1n;
+    await processRegistryEvents(from, latest);
     await setCursor("registry", latest);
   }
   await resolveMarkets();
@@ -194,4 +224,6 @@ async function main() {
   }
 }
 
-main().catch((e) => { console.error(e); process.exit(1); });
+main()
+  .catch((e) => { console.error(e); process.exit(1); })
+  .finally(() => prisma.$disconnect());

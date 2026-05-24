@@ -1,14 +1,64 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { recoverTypedDataAddress } from "viem";
-import { serviceSupabase } from "@/lib/supabase";
+import { keccak256, stringToBytes, recoverTypedDataAddress } from "viem";
+import { prisma, hexToBuf } from "@/lib/db";
 import { pushTraction } from "@/lib/traction";
+
+/// GET /api/forecasts?pythia=<name>&resolved=true&limit=10
+/// Returns recent forecasts for a Pythia. Used by the daemon's outcome
+/// feedback loop to compute rolling Brier and self-calibrate.
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const pythia = url.searchParams.get("pythia");
+  if (!pythia) return NextResponse.json({ error: "pythia required" }, { status: 400 });
+  const resolvedOnly = url.searchParams.get("resolved") === "true";
+  const limit = Math.min(Number(url.searchParams.get("limit") ?? 10), 100);
+
+  const nameHash = keccak256(stringToBytes(pythia));
+
+  const rows = await prisma.forecast.findMany({
+    where: {
+      nameHash: hexToBuf(nameHash),
+      ...(resolvedOnly ? { marketResolved: true } : {}),
+    },
+    orderBy: { blockTime: "desc" },
+    take: limit,
+    select: {
+      probScaled: true,
+      marketResolved: true,
+      marketOutcomeYes: true,
+      brierContribution: true,
+      blockTime: true,
+      marketId: true,
+    },
+  });
+
+  const items = rows.map((f) => ({
+    prob: Number(f.probScaled.toString()) / 1e18,
+    resolved: f.marketResolved,
+    outcomeYes: f.marketOutcomeYes,
+    brier: f.brierContribution != null ? Number(f.brierContribution) : null,
+    at: f.blockTime,
+  }));
+
+  const resolved = items.filter((i) => i.resolved && i.brier != null);
+  const rollingBrier = resolved.length
+    ? resolved.reduce((s, r) => s + (r.brier ?? 0), 0) / resolved.length
+    : null;
+
+  return NextResponse.json({
+    pythia,
+    items,
+    rollingBrier,
+    resolvedCount: resolved.length,
+  });
+}
 
 const forecastSchema = z.object({
   pythiaName: z.string(),
   nameHashHex: z.string().regex(/^0x[0-9a-f]{64}$/),
   marketIdHex: z.string().regex(/^0x[0-9a-f]{64}$/),
-  prob: z.string(),         // 1e18-scaled, stringified
+  prob: z.string(),
   traceHashHex: z.string().regex(/^0x[0-9a-f]{64}$/),
   traceIrysId: z.string().min(1),
   blockNumber: z.number().int().nonnegative(),
@@ -27,7 +77,6 @@ export async function POST(req: NextRequest) {
   try { body = forecastSchema.parse(await req.json()); }
   catch (err) { return NextResponse.json({ error: (err as Error).message }, { status: 400 }); }
 
-  // EIP-712 recover
   const recovered = await recoverTypedDataAddress({
     domain: {
       name: "AgoraForecast",
@@ -55,34 +104,44 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "bad signature" }, { status: 401 });
   }
 
-  const sb = serviceSupabase();
-  const { error } = await sb.from("forecasts").upsert({
-    name_hash: hexToBytea(body.nameHashHex),
-    market_id: hexToBytea(body.marketIdHex),
-    prob_scaled: body.prob,
-    trace_hash: hexToBytea(body.traceHashHex),
-    trace_irys_id: body.traceIrysId,
-    block_number: body.blockNumber,
-    block_time: new Date().toISOString(),
-    tx_hash: hexToBytea(body.txHash),
-  }, { onConflict: "trace_hash" });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  const nameHashBuf = hexToBuf(body.nameHashHex);
+  const traceHashBuf = hexToBuf(body.traceHashHex);
 
-  await sb.from("pythias")
-    .update({ last_forecast_at: new Date().toISOString() })
-    .eq("name_hash", hexToBytea(body.nameHashHex));
+  await prisma.forecast.upsert({
+    where: { traceHash: traceHashBuf },
+    update: {
+      probScaled: body.prob,
+      traceIrysId: body.traceIrysId,
+      blockNumber: BigInt(body.blockNumber),
+      txHash: hexToBuf(body.txHash),
+    },
+    create: {
+      nameHash: nameHashBuf,
+      marketId: hexToBuf(body.marketIdHex),
+      probScaled: body.prob,
+      traceHash: traceHashBuf,
+      traceIrysId: body.traceIrysId,
+      blockNumber: BigInt(body.blockNumber),
+      blockTime: new Date(),
+      txHash: hexToBuf(body.txHash),
+    },
+  });
+
+  await prisma.pythia.update({
+    where: { nameHash: nameHashBuf },
+    data: { lastForecastAt: new Date() },
+  }).catch(() => { /* mirror is best-effort */ });
 
   await pushTraction({
     kind: "forecast",
     nameHashHex: body.nameHashHex.slice(2),
     actor: body.daemonAddress,
-    payload: { pythiaName: body.pythiaName, prob: Number(BigInt(body.prob)) / 1e18, market: body.marketIdHex },
+    payload: {
+      pythiaName: body.pythiaName,
+      prob: Number(BigInt(body.prob)) / 1e18,
+      market: body.marketIdHex,
+    },
   });
 
   return NextResponse.json({ ok: true });
-}
-
-function hexToBytea(hex: string): string {
-  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
-  return `\\x${clean}`;
 }

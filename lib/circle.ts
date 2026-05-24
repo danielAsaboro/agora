@@ -45,7 +45,7 @@ export async function sendUsdc(walletId: string, to: string, amount: string) {
     walletId,
     tokenId: process.env.NEXT_PUBLIC_USDC_TOKEN_ID || "",
     destinationAddress: to,
-    amounts: [amount],
+    amount: [amount],
     fee: { type: "level", config: { feeLevel: "MEDIUM" } },
   });
 }

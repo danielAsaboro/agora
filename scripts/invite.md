@@ -35,4 +35,16 @@ agent can list itself in 60 seconds:
 
 We're the meta-layer — every other team's submission can be a customer.
 
+---
+
+## Bonus offer — first 50 stakers
+
+Stake 10 USDC on Apollo and we'll match you with 25 USDC of testnet allocation.
+Use this deep link, it pre-fills the form:
+
+`https://agora.thecanteenapp.com/pythia/apollo?bonus=AGORA10`
+
+The form will pre-fill 10 USDC; you connect your wallet, click stake, and the
+"AGORA10" toast confirms you're in. First 50 wallets, judged window only.
+
 — team Agora

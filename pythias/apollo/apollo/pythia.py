@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import List
 
 import feedparser
+import requests
 from pythia_shared.base_pythia import BasePythia
 from pythia_shared.tradingagents_wrapper import BrainResult
 from pythia_shared.polymarket_client import PredictionMarketClient
@@ -23,6 +24,9 @@ log = logging.getLogger("apollo")
 
 FOMC_RSS = "https://www.federalreserve.gov/feeds/press_monetary.xml"
 BLS_RSS = "https://www.bls.gov/feed/bls_latest.rss"
+
+MANIFOLD_BASE = "https://api.manifold.markets/v0"
+MANIFOLD_MACRO_QUERIES = ("CPI", "FOMC", "fed funds", "unemployment", "GDP", "rate cut")
 
 
 class ApolloPythia(BasePythia):
@@ -43,30 +47,49 @@ class ApolloPythia(BasePythia):
         )
 
     def choose_markets(self) -> List[dict]:
-        # 1. Try live Polymarket macro markets
+        """Pull live macro markets from Manifold's free open API.
+
+        Manifold has open prediction markets on CPI prints, FOMC decisions,
+        rate paths, unemployment — exactly Apollo's mandate space. Polymarket
+        used to carry these but in 2026 its active feed is dominated by
+        consumer/entertainment markets, so Apollo reads from Manifold.
+        """
+        seen: set[str] = set()
         out: list[dict] = []
-        if self.market_client.use_polymarket:
-            for m in self.market_client.list_markets(category="macro", limit=10):
+        for q in MANIFOLD_MACRO_QUERIES:
+            try:
+                r = requests.get(
+                    f"{MANIFOLD_BASE}/search-markets",
+                    params={"term": q, "limit": 10},
+                    timeout=6,
+                )
+                r.raise_for_status()
+            except Exception as e:
+                log.warning("manifold search for %r failed: %s", q, e)
+                continue
+            for m in r.json():
+                if m.get("isResolved"):
+                    continue
+                if m.get("outcomeType") not in (None, "BINARY"):
+                    continue
+                question = (m.get("question") or "").strip()
+                if not question or question in seen:
+                    continue
+                seen.add(question)
                 out.append({
-                    "marketIdHex": "0x" + keccak(m.get("question", "").encode()).hex(),
-                    "label": m.get("question", ""),
-                    "source": "polymarket",
-                    "external_id": m.get("conditionId"),
+                    "marketIdHex": "0x" + keccak(question.encode()).hex(),
+                    "label": question,
+                    "source": "manifold",
+                    "external_id": m.get("id"),
                 })
-        # 2. Fallback: a hard-coded representative set for the demo
+            if len(out) >= 10:
+                break
         if not out:
-            for label in [
-                "US Headline CPI YoY > 3.0% in next print",
-                "FOMC raises rates at next meeting",
-                "Unemployment rate >= 4.5% in next NFP",
-                "US Q-on-Q GDP growth annualized > 2.0%",
-            ]:
-                out.append({
-                    "marketIdHex": "0x" + keccak(label.encode()).hex(),
-                    "label": label,
-                    "source": "mock",
-                })
-        return out
+            raise RuntimeError(
+                "No macro markets found on Manifold. Apollo cannot proceed; "
+                "check https://manifold.markets/api/v0/search-markets is reachable."
+            )
+        return out[:10]
 
     def context_for_market(self, market: dict) -> str:
         chunks: list[str] = []

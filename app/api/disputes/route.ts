@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { serviceSupabase } from "@/lib/supabase";
+import { prisma, hexToBuf, bufToHex } from "@/lib/db";
 import { validateTraceFraud } from "@/lib/openai-validator";
 import { pushTraction } from "@/lib/traction";
 
@@ -21,41 +21,38 @@ export async function POST(req: NextRequest) {
   try { body = schema.parse(await req.json()); }
   catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
 
-  const sb = serviceSupabase();
-  const { data: forecast } = await sb
-    .from("forecasts")
-    .select("*, pythias(name)")
-    .eq("trace_hash", `\\x${body.traceHashHex.slice(2)}`)
-    .maybeSingle();
+  const forecast = await prisma.forecast.findUnique({
+    where: { traceHash: hexToBuf(body.traceHashHex) },
+  });
   if (!forecast) {
     return NextResponse.json({ error: "no forecast for traceHash" }, { status: 404 });
   }
 
-  // Fetch trace text from Irys
   let traceText = "";
-  if (forecast.trace_irys_id) {
+  if (forecast.traceIrysId) {
     try {
-      const r = await fetch(`https://gateway.irys.xyz/${forecast.trace_irys_id}`);
+      const r = await fetch(`https://gateway.irys.xyz/${forecast.traceIrysId}`);
       traceText = await r.text();
     } catch { /* leave empty */ }
   }
 
   const verdict = await validateTraceFraud({
-    marketLabel: bufToHex(forecast.market_id),
-    reportedProb: Number(forecast.prob_scaled) / 1e18,
+    marketLabel: bufToHex(forecast.marketId) ?? "",
+    reportedProb: Number(forecast.probScaled.toString()) / 1e18,
     trace: traceText,
   });
 
-  const { data: dispute, error } = await sb.from("disputes").insert({
-    name_hash: `\\x${body.nameHashHex.slice(2)}`,
-    trace_hash: `\\x${body.traceHashHex.slice(2)}`,
-    submitter_address: body.submitterAddress,
-    rationale: body.rationale,
-    validator_verdict: verdict,
-    status: verdict.ok ? "rejected" : "upheld",
-    resolved_at: new Date().toISOString(),
-  }).select().single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  const dispute = await prisma.dispute.create({
+    data: {
+      nameHash: hexToBuf(body.nameHashHex),
+      traceHash: hexToBuf(body.traceHashHex),
+      submitterAddress: body.submitterAddress,
+      rationale: body.rationale,
+      validatorVerdict: verdict as any,
+      status: verdict.ok ? "rejected" : "upheld",
+      resolvedAt: new Date(),
+    },
+  });
 
   await pushTraction({
     kind: "dispute",
@@ -65,10 +62,4 @@ export async function POST(req: NextRequest) {
   });
 
   return NextResponse.json({ ok: true, dispute, verdict });
-}
-
-function bufToHex(b: any): string {
-  if (!b) return "";
-  if (typeof b === "string") return b;
-  return "0x" + Buffer.from(b).toString("hex");
 }

@@ -1,10 +1,18 @@
 {
   "name": "apollo",
-  "owner": "0x0000000000000000000000000000000000000000",
-  "daemon": "0x0000000000000000000000000000000000000000",
+  "owner": "0x00CA0b10143e66fD0B393F49F883B9B77219611B",
+  "daemon": "0x3a8b72d3c4e875197e7230e64e7a5e5ab10a15bd",
   "description": "Apollo: oracle of macro. Forecasts US inflation, Fed decisions, GDP prints, and labor releases. Sources BLS, Fed minutes, FOMC dot plots, and macro headlines.",
   "modelFingerprint": "openai:gpt-4o-mini",
-  "mandateCategories": ["macro", "cpi", "fed", "fomc", "nfp", "gdp", "rates"],
+  "mandateCategories": [
+    "macro",
+    "cpi",
+    "fed",
+    "fomc",
+    "nfp",
+    "gdp",
+    "rates"
+  ],
   "targetMarkets": [],
   "accuracyMetric": "brier",
   "slashingFloorBps": 0,

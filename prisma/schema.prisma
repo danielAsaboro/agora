@@ -1,0 +1,193 @@
+// Agora — Prisma schema (replaces supabase/migrations/*.sql).
+// Postgres 14+ required (Bytes -> bytea, Decimal -> numeric(78,0) for uint256).
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// One row per registered Pythia. name_hash is keccak256(name) — bytes32.
+model Pythia {
+  nameHash           Bytes      @id @map("name_hash")
+  name               String     @unique
+  ownerAddress       String     @map("owner_address")
+  daemonAddress      String     @map("daemon_address")
+  vaultAddress       String?    @map("vault_address")          // nullable while indexer reconciles
+  manifestHash       Bytes      @map("manifest_hash")
+  manifestIrysId     String?    @map("manifest_irys_id")
+  mandateRoot        Bytes      @map("mandate_root")
+  mandateCategories  String[]   @default([]) @map("mandate_categories")
+  bondFloor          Decimal    @default(0) @db.Decimal(78, 0) @map("bond_floor")
+  bondBalance        Decimal    @default(0) @db.Decimal(78, 0) @map("bond_balance")
+  stakePrincipal     Decimal    @default(0) @db.Decimal(78, 0) @map("stake_principal")
+  totalShares        Decimal    @default(0) @db.Decimal(78, 0) @map("total_shares")
+  accruedOwnerFees   Decimal    @default(0) @db.Decimal(78, 0) @map("accrued_owner_fees")
+  lastForecastAt     DateTime?  @map("last_forecast_at")
+  registeredAt       DateTime   @default(now()) @map("registered_at")
+  delisted           Boolean    @default(false)
+  delistedReason     Int?       @map("delisted_reason")
+  agoraRank          Decimal?   @default(0) @map("agora_rank")
+  brier30d           Decimal?   @map("brier_30d")
+  profileImageUrl    String?    @map("profile_image_url")
+  description        String?
+  circleWalletId     String?    @map("circle_wallet_id")
+  extra              Json       @default("{}")
+
+  forecasts          Forecast[]
+  stakes             Stake[]
+  positions          Position[]
+  builderFees        BuilderFee[]
+  slashings          Slashing[]
+  disputes           Dispute[]
+  tractionEvents     TractionEvent[]
+
+  @@index([ownerAddress])
+  @@index([delisted])
+  @@index([agoraRank(sort: Desc)])
+  @@map("pythias")
+}
+
+model Forecast {
+  id                  String    @id @default(uuid()) @db.Uuid
+  nameHash            Bytes     @map("name_hash")
+  marketId            Bytes     @map("market_id")
+  probScaled          Decimal   @db.Decimal(78, 0) @map("prob_scaled")  // 1e18-fixed
+  traceHash           Bytes     @unique @map("trace_hash")
+  traceIrysId         String?   @map("trace_irys_id")
+  blockNumber         BigInt    @map("block_number")
+  blockTime           DateTime  @map("block_time")
+  txHash              Bytes     @map("tx_hash")
+  positionId          BigInt?   @map("position_id")
+  marketResolved      Boolean   @default(false) @map("market_resolved")
+  marketOutcomeYes    Boolean?  @map("market_outcome_yes")
+  brierContribution   Decimal?  @map("brier_contribution")
+  extra               Json      @default("{}")
+
+  pythia              Pythia    @relation(fields: [nameHash], references: [nameHash], onDelete: Cascade)
+
+  @@index([nameHash, blockTime(sort: Desc)])
+  @@index([marketId])
+  @@map("forecasts")
+}
+
+model Stake {
+  id            String    @id @default(uuid()) @db.Uuid
+  nameHash      Bytes     @map("name_hash")
+  userAddress   String    @map("user_address")
+  action        String    // stake | queue_redeem | redeem | bond_post | bond_withdraw
+  quoteAmount   Decimal   @default(0) @db.Decimal(78, 0) @map("quote_amount")
+  shares        Decimal   @default(0) @db.Decimal(78, 0)
+  blockNumber   BigInt    @map("block_number")
+  blockTime     DateTime  @map("block_time")
+  txHash        Bytes     @map("tx_hash")
+  extra         Json      @default("{}")
+
+  pythia        Pythia    @relation(fields: [nameHash], references: [nameHash], onDelete: Cascade)
+
+  @@index([nameHash, blockTime(sort: Desc)])
+  @@index([userAddress])
+  @@map("stakes")
+}
+
+model Position {
+  id                String    @id @default(uuid()) @db.Uuid
+  nameHash          Bytes     @map("name_hash")
+  vaultPositionId   BigInt    @map("vault_position_id")
+  marketId          Bytes     @map("market_id")
+  yes               Boolean
+  quoteAmount       Decimal   @db.Decimal(78, 0) @map("quote_amount")
+  openedAt          DateTime  @map("opened_at")
+  closedAt          DateTime? @map("closed_at")
+  returnedAmount    Decimal?  @db.Decimal(78, 0) @map("returned_amount")
+  pnl               Decimal?  @db.Decimal(78, 0)
+  extra             Json      @default("{}")
+
+  pythia            Pythia    @relation(fields: [nameHash], references: [nameHash], onDelete: Cascade)
+
+  @@unique([nameHash, vaultPositionId])
+  @@map("positions")
+}
+
+model BuilderFee {
+  id          String    @id @default(uuid()) @db.Uuid
+  nameHash    Bytes     @map("name_hash")
+  amount      Decimal   @db.Decimal(78, 0)
+  claimedAt   DateTime  @map("claimed_at")
+  txHash      Bytes     @map("tx_hash")
+
+  pythia      Pythia    @relation(fields: [nameHash], references: [nameHash], onDelete: Cascade)
+
+  @@map("builder_fees")
+}
+
+model Slashing {
+  id            String    @id @default(uuid()) @db.Uuid
+  nameHash      Bytes     @map("name_hash")
+  slashType     Int       @map("slash_type")
+  amount        Decimal   @db.Decimal(78, 0)
+  detail        Json      @default("{}")
+  blockNumber   BigInt    @map("block_number")
+  blockTime     DateTime  @map("block_time")
+  txHash        Bytes     @map("tx_hash")
+
+  pythia        Pythia    @relation(fields: [nameHash], references: [nameHash], onDelete: Cascade)
+
+  @@index([nameHash, blockTime(sort: Desc)])
+  @@map("slashings")
+}
+
+model Market {
+  marketId      Bytes     @id @map("market_id")
+  label         String
+  category      String?
+  source        String    @default("mock")    // mock | polymarket | limitless
+  expiresAt     DateTime? @map("expires_at")
+  resolved      Boolean   @default(false)
+  outcomeYes    Boolean?  @map("outcome_yes")
+  resolvedAt    DateTime? @map("resolved_at")
+  extra         Json      @default("{}")
+
+  @@map("markets")
+}
+
+model Dispute {
+  id                      String    @id @default(uuid()) @db.Uuid
+  nameHash                Bytes     @map("name_hash")
+  traceHash               Bytes     @map("trace_hash")
+  submitterAddress        String    @map("submitter_address")
+  rationale               String
+  validatorVerdict        Json?     @map("validator_verdict")
+  status                  String    @default("open")    // open | upheld | rejected
+  bondShareToSubmitter    Decimal?  @db.Decimal(78, 0) @map("bond_share_to_submitter")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  resolvedAt              DateTime? @map("resolved_at")
+
+  pythia                  Pythia    @relation(fields: [nameHash], references: [nameHash], onDelete: Cascade)
+
+  @@map("disputes")
+}
+
+model TractionEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  kind        String    // pythia_registered | stake | forecast | resolved | dispute | invite
+  nameHash    Bytes?    @map("name_hash")
+  actor       String?
+  payload     Json      @default("{}")
+  pushedAt    DateTime? @map("pushed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  pythia      Pythia?   @relation(fields: [nameHash], references: [nameHash], onDelete: SetNull)
+
+  @@index([kind, createdAt(sort: Desc)])
+  @@map("traction_events")
+}
+
+model IndexerCursor {
+  name   String  @id
+  block  BigInt
+
+  @@map("indexer_cursor")
+}

@@ -1,0 +1,55 @@
+{
+  "apollo": {
+    "circleWalletSetId": "d760d682-e4fd-5075-8681-e29f352c790a",
+    "circleWalletId": "8c944fa9-87b8-5faa-a66d-c47ea9b3009c",
+    "daemonAddress": "0x3a8b72d3c4e875197e7230e64e7a5e5ab10a15bd",
+    "manifestHash": "0x87e073c7c1236c1938e87b4f0fdb5708b0cbf8d27fa48bc6e677c27af8205922",
+    "mandateRoot": "0x014eabc6b5e29c02e3431e4795ec32471c86a589a53a5c8bbb09bf91bf94d32c",
+    "nameHash": "0x7f4a5cde0f43b305715c9d6a8265b58e9707352ce136822f495e5f05b2944616",
+    "vaultAddress": "0xD2dC94179Aeab2C9048FcC766d3991C3d66EFa07",
+    "daemonFundedTxHash": "0xcd50c1e2e83bc8b54364916a8b6e291e8fbd0496693df2ef0b2fa666938a27bf"
+  },
+  "hermes": {
+    "circleWalletSetId": "b70964e8-d3df-5683-8ead-011c798c7060",
+    "circleWalletId": "e5efb40c-04b0-57c6-a72e-c4635350dee4",
+    "daemonAddress": "0x2f4e365fa53ed775cff2952703497578008ce109",
+    "manifestHash": "0x03f04c99058c998da297e3cfe22aba459739947760db69abc1c1503e028211c8",
+    "mandateRoot": "0x6dd4f384f763ee35f7ef6d5132b4d50a80d6e7221fc4f4f376080ef1c4a79069",
+    "nameHash": "0xc604ccf1cb36d37f5a51ad3e48a687638b006e30ef88ebbfd32e1a61b4997af7",
+    "vaultAddress": "0xA12E912f591Da9f6AB6D775efb50585393bA9775",
+    "daemonFundedTxHash": "0x09f2cf014fcb616208d7729c637704352bf7714d17c932a7de68a6e4e320f518"
+  },
+  "athena": {
+    "circleWalletSetId": "431a0f37-9541-5352-a3f9-e2b510e3bad2",
+    "circleWalletId": "f4d0c312-f79a-568c-adb9-03f23c05b920",
+    "daemonAddress": "0xaf678e7f8fc14ce416956f350ad667f8d85a8f53",
+    "manifestHash": "0x04ea574948db34b48400b8c0a5741bd5616bc6ecb017d6b8c051baa86d84ffd2",
+    "mandateRoot": "0xc2a520ba770d7d528ae8fa2db34abbb6345415c87ce614a484b3181b1ebb1d67",
+    "nameHash": "0xcc354a544f7c77dcc49df8d278c9a8e0fc9f0c94fac987e71174ed109b524b5f",
+    "registeredTxHash": "0x141d1a27dbf4bbedb23f492776b26ab2eb7ed7a0d9ab30905ef899053d203cdb",
+    "vaultAddress": "0xF011E5Fb9B7C71C52a3034212FB1C24A6249fd53",
+    "daemonFundedTxHash": "0x71e2d44d6ea99a0d9a3c5cd05924758c99b13bde3a1fc2f72385849f6ab9c107"
+  },
+  "cassandra": {
+    "circleWalletSetId": "c63bc505-b836-51c8-bb11-8e3cd90a6778",
+    "circleWalletId": "45d60faa-17e0-551b-a815-75254b05c11d",
+    "daemonAddress": "0xbdc6c57ab0add1f37a140859d063e46d2342614d",
+    "manifestHash": "0x4eafbde53c002686f8d73d288190e83c6fb0b8f31b6a41ba18e9ca7269b6be8c",
+    "mandateRoot": "0x0164ca2ba27e60033a93244b218613a5c8c144e6e3d600ed4557befa1103eff2",
+    "nameHash": "0x19a5359c8c8948bd0c4c1c7de0e1626c87449ef805fd0202bf28a61507fc1a38",
+    "registeredTxHash": "0x21b6fa6e09256606343e8694da3402e2a6bae554fe99ebd545b20d9c67677048",
+    "vaultAddress": "0x9b7B5e535706F7a69Ee02bC7a9dA9920d348C302",
+    "daemonFundedTxHash": "0x44a634c02901821a88b31a0a92f62735f9c03e7b276cfaf0312defa247ffc1c5"
+  },
+  "hephaestus": {
+    "circleWalletSetId": "1a2d6d86-e436-590a-bcc2-c37c39d78269",
+    "circleWalletId": "408182f8-6937-5e69-9357-e49d65512a1c",
+    "daemonAddress": "0x7eadd932ce8e5c26a7a4398120d9d6971d075095",
+    "manifestHash": "0x2f86bcc5747fa55fd004ce473062e02e3952b28a25deaa8d39e52dfc163be6ca",
+    "mandateRoot": "0x715a2a222beef580f2708a855f762121334aaba4c8c238876afaf0c02557d6f1",
+    "nameHash": "0x387d85f7db39edb572dde5de61cb3425637d8667de55ed0a2a6333504fea0e1b",
+    "registeredTxHash": "0x45739f7ec2c2467e2c242755d6967c250ed7df16254d6b410e59b3bfdcad2374",
+    "vaultAddress": "0x6165854Afe04DF35Ec09906C87Fe52DDe2a7D353",
+    "daemonFundedTxHash": "0x9490c8d697cdb391ef906113fadb59bf0a131c05b1f03802dcaef95644fe4638"
+  }
+}

@@ -1,10 +1,16 @@
 {
   "name": "athena",
-  "owner": "0x0000000000000000000000000000000000000000",
-  "daemon": "0x0000000000000000000000000000000000000000",
+  "owner": "0x00CA0b10143e66fD0B393F49F883B9B77219611B",
+  "daemon": "0xaf678e7f8fc14ce416956f350ad667f8d85a8f53",
   "description": "Athena: goddess of tactical wisdom. Forecasts sports outcomes against soft markets - moneylines, game totals, series winners.",
   "modelFingerprint": "openai:gpt-4o-mini",
-  "mandateCategories": ["sports", "nba", "nfl", "soccer", "mlb"],
+  "mandateCategories": [
+    "sports",
+    "nba",
+    "nfl",
+    "soccer",
+    "mlb"
+  ],
   "targetMarkets": [],
   "accuracyMetric": "brier",
   "slashingFloorBps": 0,

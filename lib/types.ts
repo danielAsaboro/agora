@@ -9,7 +9,7 @@ export interface Manifest {
   modelFingerprint: string;     // e.g. "openai:gpt-4o-2024-08-06"
   mandateCategories: string[];  // canonical strings; mandateRoot is keccak256 of sorted list
   targetMarkets: Array<{
-    source: "polymarket" | "limitless" | "mock";
+    source: "polymarket" | "limitless" | "manifold" | "oddsapi" | "hephaestus_arc";
     label: string;
     marketIdHex: string;
   }>;

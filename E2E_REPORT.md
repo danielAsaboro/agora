@@ -253,3 +253,38 @@ traction  13s ago
 - `arc-canteen update traction` pushes events that show up on the dashboard.
 
 The system is real, deployed, and producing on-chain artifacts. The remaining work is polish (UI, more Pythias, video), not architecture.
+
+---
+
+## Submission-window update (2026-05-23)
+
+### Live state at submission
+
+- **Web app:** deployed to Vercel (URL in README header)
+- **Indexer:** deployed to Railway worker, polling every 5s
+- **Supabase:** hosted; migrations + `scripts/seed-supabase.sql` applied; 3 demo Pythias visible at first paint
+- **Wallet flow:** wagmi v2 + RainbowKit v2 wired; `StakeForm` and `RegisterPythia` sign locally via the connected wallet (no more `DEPLOYER_PK` server-side stake)
+- **Circle Programmable Wallets:** opt-in at register; `/api/circle/create-wallet` provisions a Circle wallet; profile page surfaces the "🟢 Circle-managed" badge
+
+### Test totals at submission
+
+| Suite | Count | Notes |
+|---|---|---|
+| forge (contracts) | **15 / 15** including 1 fuzz × 1000 runs | `testFuzz_stakeRedeemRoundTrip` over [2 USDC, 100k USDC] |
+| python (brain) | **3 / 3** | fail-fast on missing key, dry-run opt-in, crowd-view anchoring |
+
+### Honesty pass
+
+- README no longer claims CCTP, Gateway, USYC, EURC, or Polymarket secondary AMM — all moved to the explicit "Roadmap (NOT present in this submission)" section.
+- The Python daemon refuses to start without `OPENAI_API_KEY` (explicit `AGORA_DRY_RUN=1` is the only bypass). Stub traces are clearly labeled `[DRY-RUN]`.
+- The stake form carries an inline risk disclosure: stake erodes via NAV when positions lose; bond burns never touch stake.
+
+### Agent loop
+
+The brain is now a two-stage research → forecast chain. Stage 1 emits a
+structured evidence JSON; stage 2 commits a probability and confidence,
+optionally anchored to a Polymarket book midpoint and self-calibrated against
+the Pythia's rolling Brier over its last 10 resolved forecasts. The Irys
+trace contains both stages so judges reading the trace see an agent run, not
+a single prompt.
+

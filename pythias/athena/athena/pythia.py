@@ -25,30 +25,28 @@ class AthenaPythia(BasePythia):
     def choose_markets(self) -> List[dict]:
         key = os.environ.get("ATHENA_ODDSAPI_KEY")
         if not key:
-            # Demo fallback
-            return [
-                {"marketIdHex": "0x" + keccak(b"Lakers vs Celtics Game 5 - Lakers win").hex(),
-                 "label": "Lakers vs Celtics Game 5 - Lakers win", "source": "mock"},
-            ]
-        try:
-            r = requests.get(
-                f"{ODDS_BASE}/sports/basketball_nba/odds",
-                params={"apiKey": key, "regions": "us", "markets": "h2h", "oddsFormat": "decimal"},
-                timeout=6,
+            raise RuntimeError(
+                "Athena requires ATHENA_ODDSAPI_KEY (the-odds-api.com) to "
+                "list sports markets. Set it before running the daemon."
             )
-            r.raise_for_status()
-            out = []
-            for ev in r.json()[:6]:
-                label = f"{ev['home_team']} beats {ev['away_team']}"
-                out.append({
-                    "marketIdHex": "0x" + keccak(label.encode()).hex(),
-                    "label": label,
-                    "source": "mock",
-                    "odds": ev.get("bookmakers", [{}])[0],
-                })
-            return out
-        except Exception:
-            return []
+        r = requests.get(
+            f"{ODDS_BASE}/sports/basketball_nba/odds",
+            params={"apiKey": key, "regions": "us", "markets": "h2h", "oddsFormat": "decimal"},
+            timeout=6,
+        )
+        r.raise_for_status()
+        out = []
+        for ev in r.json()[:6]:
+            label = f"{ev['home_team']} beats {ev['away_team']}"
+            out.append({
+                "marketIdHex": "0x" + keccak(label.encode()).hex(),
+                "label": label,
+                "source": "oddsapi",
+                "odds": ev.get("bookmakers", [{}])[0],
+            })
+        if not out:
+            raise RuntimeError("OddsAPI returned no NBA events for Athena.")
+        return out
 
     def context_for_market(self, market: dict) -> str:
         odds = market.get("odds")

@@ -4,10 +4,12 @@ Data sources: Reuters / AP / WSJ RSS, plus optional NewsAPI key.
 """
 from __future__ import annotations
 import logging
+import re
 import feedparser
 from typing import List
 
 from pythia_shared.base_pythia import BasePythia
+from pythia_shared.polymarket_client import PredictionMarketClient
 from eth_utils import keccak
 
 log = logging.getLogger("hermes")
@@ -19,6 +21,10 @@ NEWS_FEEDS = [
 
 
 class HermesPythia(BasePythia):
+    def __init__(self, manifest_path: str):
+        super().__init__(manifest_path)
+        self.market_client = PredictionMarketClient()
+
     def system_prompt(self) -> str:
         return (
             "You are Hermes, the geopolitics Pythia. Forecast outcomes of\n"
@@ -27,14 +33,42 @@ class HermesPythia(BasePythia):
             "Anything outside geopolitics will slash 25% of your bond."
         )
 
+    GEO_KEYWORDS = (
+        "election", "president", "primary", "nominat", "senate", "house race",
+        "ukraine", "russia", "putin", "zelensk", "israel", "gaza", "iran",
+        "china", "taiwan", "trump", "biden", "harris", "sanction", "treaty",
+        "war", "coup", "ceasefire", "north korea", "saudi", "nato",
+    )
+
     def choose_markets(self) -> List[dict]:
-        seeds = [
-            "Russia-Ukraine ceasefire signed by end of next quarter",
-            "New US sanctions package on Iran in next 60 days",
-            "EU sanctions vote passes 75% of member states",
-            "Taiwan strait incident escalates to >100 troop movements next month",
-        ]
-        return [{"marketIdHex": "0x" + keccak(s.encode()).hex(), "label": s, "source": "mock"} for s in seeds]
+        if not self.market_client.use_polymarket:
+            raise RuntimeError(
+                "Hermes requires POLYMARKET_BASE to list geopolitics markets. "
+                "Set POLYMARKET_BASE (and POLYMARKET_CHAIN_ID) in the env."
+            )
+        pattern = re.compile(
+            r"\b(" + "|".join(re.escape(k) for k in self.GEO_KEYWORDS) + r")\b",
+            re.IGNORECASE,
+        )
+        out: list[dict] = []
+        for m in self.market_client.list_markets(limit=200):
+            q = (m.get("question") or "")
+            if not pattern.search(q):
+                continue
+            out.append({
+                "marketIdHex": "0x" + keccak(m.get("question", "").encode()).hex(),
+                "label": m.get("question", ""),
+                "source": "polymarket",
+                "external_id": m.get("conditionId"),
+            })
+            if len(out) >= 10:
+                break
+        if not out:
+            raise RuntimeError(
+                "No geopolitics markets found on Polymarket. Mandate keywords: "
+                + ", ".join(self.GEO_KEYWORDS)
+            )
+        return out
 
     def context_for_market(self, market: dict) -> str:
         out: list[str] = []

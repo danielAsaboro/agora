@@ -1,10 +1,16 @@
 {
   "name": "hephaestus",
-  "owner": "0x0000000000000000000000000000000000000000",
-  "daemon": "0x0000000000000000000000000000000000000000",
+  "owner": "0x00CA0b10143e66fD0B393F49F883B9B77219611B",
+  "daemon": "0x7eadd932ce8e5c26a7a4398120d9d6971d075095",
   "description": "Hephaestus: smith of the gods. Forecasts engineering ship dates. 'Will project X ship feature Y by date Z' — derived from GitHub activity, release feeds, and roadmap docs.",
   "modelFingerprint": "openai:gpt-4o-mini",
-  "mandateCategories": ["engineering", "ship_date", "releases", "github", "roadmap"],
+  "mandateCategories": [
+    "engineering",
+    "ship_date",
+    "releases",
+    "github",
+    "roadmap"
+  ],
   "targetMarkets": [],
   "accuracyMetric": "brier",
   "slashingFloorBps": 0,
