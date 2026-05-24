@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { DisputeForm } from "./DisputeForm";
 
 export interface Forecast {
   id: string | number;
@@ -12,11 +13,20 @@ export interface Forecast {
   outcomeYes?: boolean | null;
   brier?: number | null;
   traceIrysId?: string | null;
+  traceHashHex?: string | null;
   evidence?: string;
   forecastJson?: string;
 }
 
-export function ForecastScroll({ forecasts }: { forecasts: Forecast[] }) {
+export function ForecastScroll({
+  forecasts,
+  nameHashHex,
+  pythiaName,
+}: {
+  forecasts: Forecast[];
+  nameHashHex?: string;
+  pythiaName?: string;
+}) {
   if (!forecasts.length) {
     return (
       <p className="font-cormorant italic text-agora-parchment/50 py-6 px-2">
@@ -28,15 +38,34 @@ export function ForecastScroll({ forecasts }: { forecasts: Forecast[] }) {
   return (
     <ul className="divide-y divide-oracle-bronze/15">
       {forecasts.map((f, i) => (
-        <ForecastRow key={f.id} f={f} idx={i + 1} />
+        <ForecastRow
+          key={f.id}
+          f={f}
+          idx={i + 1}
+          nameHashHex={nameHashHex}
+          pythiaName={pythiaName}
+        />
       ))}
     </ul>
   );
 }
 
-function ForecastRow({ f, idx }: { f: Forecast; idx: number }) {
+function ForecastRow({
+  f,
+  idx,
+  nameHashHex,
+  pythiaName,
+}: {
+  f: Forecast;
+  idx: number;
+  nameHashHex?: string;
+  pythiaName?: string;
+}) {
   const [open, setOpen] = useState(false);
+  const [disputeOpen, setDisputeOpen] = useState(false);
   const t = f.blockTime ? new Date(f.blockTime) : null;
+
+  const canDispute = Boolean(nameHashHex && f.traceHashHex);
 
   return (
     <li>
@@ -94,20 +123,55 @@ function ForecastRow({ f, idx }: { f: Forecast; idx: number }) {
             transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
             className="overflow-hidden"
           >
-            <div className="px-2 pb-5 pt-1 grid md:grid-cols-2 gap-4">
-              <TraceBlock label="I · Evidence" body={f.evidence || "—"} />
-              <TraceBlock label="II · Forecast" body={f.forecastJson || "—"} />
-              {f.traceIrysId && (
-                <a
-                  href={`https://gateway.irys.xyz/${f.traceIrysId}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="md:col-span-2 inline-flex items-center gap-2 self-start mt-1 px-3 py-1.5 rounded-sm border border-oracle/35 bg-oracle/5 hover:bg-oracle/10 hover:border-oracle text-oracle-glow font-mono text-[10px] tracking-[0.32em] uppercase transition-all"
-                >
-                  <WaxSeal />
-                  Open trace · Irys
-                </a>
-              )}
+            <div className="px-2 pb-5 pt-1 space-y-4">
+              <div className="grid md:grid-cols-2 gap-4">
+                <TraceBlock label="I · Evidence" body={f.evidence || "—"} />
+                <TraceBlock label="II · Forecast" body={f.forecastJson || "—"} />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                {f.traceIrysId && (
+                  <a
+                    href={`https://gateway.irys.xyz/${f.traceIrysId}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 self-start px-3 py-1.5 rounded-sm border border-oracle/35 bg-oracle/5 hover:bg-oracle/10 hover:border-oracle text-oracle-glow font-mono text-[10px] tracking-[0.32em] uppercase transition-all"
+                  >
+                    <WaxSeal />
+                    Open trace · Irys
+                  </a>
+                )}
+                {canDispute && !disputeOpen && (
+                  <button
+                    type="button"
+                    onClick={() => setDisputeOpen(true)}
+                    className="inline-flex items-center gap-2 self-start px-3 py-1.5 rounded-sm border border-vermilion/35 bg-vermilion/5 hover:bg-vermilion/10 hover:border-vermilion text-vermilion-glow font-mono text-[10px] tracking-[0.32em] uppercase transition-all"
+                  >
+                    <DisputeIcon />
+                    File Dispute
+                  </button>
+                )}
+              </div>
+
+              <AnimatePresence initial={false}>
+                {disputeOpen && canDispute && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                    className="overflow-hidden"
+                  >
+                    <DisputeForm
+                      nameHashHex={nameHashHex!}
+                      traceHashHex={f.traceHashHex!}
+                      pythiaName={pythiaName ?? "this Pythia"}
+                      irysId={f.traceIrysId}
+                      onClose={() => setDisputeOpen(false)}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </motion.div>
         )}
@@ -135,6 +199,15 @@ function WaxSeal() {
       <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1" fill="rgba(196,63,63,0.25)" />
       <circle cx="7" cy="7" r="3" stroke="currentColor" strokeWidth="0.6" />
       <path d="M5 7 L9 7 M7 5 L7 9" stroke="currentColor" strokeWidth="0.6" />
+    </svg>
+  );
+}
+
+function DisputeIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
+      <path d="M6 1 L6 7 M6 9.5 L6 10.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      <circle cx="6" cy="6" r="5.5" stroke="currentColor" strokeWidth="0.8" />
     </svg>
   );
 }

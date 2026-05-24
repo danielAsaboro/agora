@@ -4,6 +4,35 @@ import { prisma, hexToBuf, bufToHex } from "@/lib/db";
 import { validateTraceFraud } from "@/lib/openai-validator";
 import { pushTraction } from "@/lib/traction";
 
+export async function GET(req: NextRequest) {
+  const nameHashHex = req.nextUrl.searchParams.get("nameHash");
+  const limit = Math.min(Number(req.nextUrl.searchParams.get("limit") ?? "20"), 50);
+  if (!nameHashHex || !/^0x[0-9a-f]{64}$/i.test(nameHashHex)) {
+    return NextResponse.json({ error: "nameHash required (0x hex32)" }, { status: 400 });
+  }
+  const disputes = await prisma.dispute.findMany({
+    where: { nameHash: hexToBuf(nameHashHex) },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    select: {
+      id: true,
+      traceHash: true,
+      submitterAddress: true,
+      rationale: true,
+      status: true,
+      createdAt: true,
+      resolvedAt: true,
+      validatorVerdict: true,
+    },
+  });
+  return NextResponse.json({
+    disputes: disputes.map((d) => ({
+      ...d,
+      traceHash: bufToHex(d.traceHash),
+    })),
+  });
+}
+
 const schema = z.object({
   nameHashHex: z.string().regex(/^0x[0-9a-f]{64}$/),
   traceHashHex: z.string().regex(/^0x[0-9a-f]{64}$/),

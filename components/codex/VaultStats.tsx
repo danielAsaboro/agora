@@ -6,7 +6,13 @@ import { motion } from "motion/react";
 
 const REFRESH_MS = 8000;
 
-export function VaultStats({ vaultAddress }: { vaultAddress: string }) {
+export function VaultStats({
+  vaultAddress,
+  denomination,
+}: {
+  vaultAddress: string;
+  denomination?: string;
+}) {
   const vault = vaultAddress as `0x${string}`;
   const { address } = useAccount();
 
@@ -51,6 +57,16 @@ export function VaultStats({ vaultAddress }: { vaultAddress: string }) {
 
   return (
     <div className="space-y-4">
+      {denomination && denomination !== "USDC" && (
+        <div className="flex items-center gap-2">
+          <span className="inline-block px-2.5 py-0.5 rounded-sm border border-oracle-bronze/40 bg-oracle-bronze/5 font-mono text-[9px] tracking-[0.28em] uppercase text-oracle-glow">
+            {denomination}
+          </span>
+          <span className="font-cormorant italic text-[12px] text-agora-parchment/50">
+            {denomination === "USYC" ? "Yield-bearing denomination" : "Euro denomination"}
+          </span>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-4">
         <Metric
           label="NAV / PYT"

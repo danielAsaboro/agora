@@ -198,6 +198,104 @@ async function sumBuilderFees(nameHash: Buffer): Promise<number> {
   return fees.reduce((s, r) => s + Number(r.amount.toString()), 0);
 }
 
+async function processAmmEvents(fromBlock: bigint, toBlock: bigint) {
+  const client = publicClient();
+  // Collect all pool addresses registered on Pythias via extra.poolAddress.
+  const pythias = await prisma.pythia.findMany({
+    select: { name: true, extra: true },
+  });
+  const pools = pythias
+    .map((p) => ({ name: p.name, pool: (p.extra as any)?.poolAddress as string | undefined }))
+    .filter((p): p is { name: string; pool: string } => Boolean(p.pool && p.pool !== "0x0000000000000000000000000000000000000000"));
+
+  for (const { name: pythiaName, pool } of pools) {
+    const poolAddr = pool as `0x${string}`;
+
+    // Swap events
+    const swapLogs = await client.getLogs({
+      address: poolAddr,
+      event: parseAbiItem(
+        "event Swap(address indexed sender, address tokenIn, uint256 amountIn, uint256 amountOut, address indexed to)"
+      ) as any,
+      fromBlock,
+      toBlock,
+    }).catch(() => []);
+
+    for (const lg of swapLogs) {
+      const args = (lg as any).args as any;
+      const blk = await client.getBlock({ blockNumber: lg.blockNumber! }).catch(() => null);
+      await prisma.poolSwap.create({
+        data: {
+          pool: poolAddr,
+          tokenIn: args.tokenIn,
+          amountIn: args.amountIn.toString(),
+          amountOut: args.amountOut.toString(),
+          sender: args.sender,
+          ts: blk ? new Date(Number(blk.timestamp) * 1000) : new Date(),
+          blockNumber: Number(lg.blockNumber!),
+          txHash: lg.transactionHash!,
+        },
+      }).catch(() => { /* duplicate guard */ });
+    }
+
+    // LiquidityAdded events
+    const addedLogs = await client.getLogs({
+      address: poolAddr,
+      event: parseAbiItem(
+        "event LiquidityAdded(address indexed provider, uint256 amountA, uint256 amountB, uint256 lpMinted)"
+      ) as any,
+      fromBlock,
+      toBlock,
+    }).catch(() => []);
+
+    for (const lg of addedLogs) {
+      const args = (lg as any).args as any;
+      const blk = await client.getBlock({ blockNumber: lg.blockNumber! }).catch(() => null);
+      await prisma.poolLiquidity.create({
+        data: {
+          pool: poolAddr,
+          action: "added",
+          provider: args.provider,
+          amountA: args.amountA.toString(),
+          amountB: args.amountB.toString(),
+          lpShares: args.lpMinted.toString(),
+          ts: blk ? new Date(Number(blk.timestamp) * 1000) : new Date(),
+          blockNumber: Number(lg.blockNumber!),
+          txHash: lg.transactionHash!,
+        },
+      }).catch(() => {});
+    }
+
+    // LiquidityRemoved events
+    const removedLogs = await client.getLogs({
+      address: poolAddr,
+      event: parseAbiItem(
+        "event LiquidityRemoved(address indexed provider, uint256 lpBurned, uint256 amountA, uint256 amountB)"
+      ) as any,
+      fromBlock,
+      toBlock,
+    }).catch(() => []);
+
+    for (const lg of removedLogs) {
+      const args = (lg as any).args as any;
+      const blk = await client.getBlock({ blockNumber: lg.blockNumber! }).catch(() => null);
+      await prisma.poolLiquidity.create({
+        data: {
+          pool: poolAddr,
+          action: "removed",
+          provider: args.provider,
+          amountA: args.amountA.toString(),
+          amountB: args.amountB.toString(),
+          lpShares: args.lpBurned.toString(),
+          ts: blk ? new Date(Number(blk.timestamp) * 1000) : new Date(),
+          blockNumber: Number(lg.blockNumber!),
+          txHash: lg.transactionHash!,
+        },
+      }).catch(() => {});
+    }
+  }
+}
+
 async function tick() {
   const client = publicClient();
   const latest = await client.getBlockNumber();
@@ -205,6 +303,7 @@ async function tick() {
   if (latest > cursor) {
     const from = cursor === 0n ? (latest > 1000n ? latest - 1000n : 0n) : cursor + 1n;
     await processRegistryEvents(from, latest);
+    await processAmmEvents(from, latest);
     await setCursor("registry", latest);
   }
   await resolveMarkets();

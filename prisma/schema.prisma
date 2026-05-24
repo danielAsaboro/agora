@@ -185,6 +185,37 @@ model TractionEvent {
   @@map("traction_events")
 }
 
+model PoolSwap {
+  id          String   @id @default(uuid()) @db.Uuid
+  pool        String
+  tokenIn     String   @map("token_in")
+  amountIn    Decimal  @db.Decimal(78, 0) @map("amount_in")
+  amountOut   Decimal  @db.Decimal(78, 0) @map("amount_out")
+  sender      String
+  ts          DateTime
+  blockNumber Int      @map("block_number")
+  txHash      String   @map("tx_hash")
+
+  @@index([pool, ts(sort: Desc)])
+  @@map("pool_swaps")
+}
+
+model PoolLiquidity {
+  id          String   @id @default(uuid()) @db.Uuid
+  pool        String
+  action      String   // added | removed
+  provider    String
+  amountA     Decimal  @db.Decimal(78, 0) @map("amount_a")
+  amountB     Decimal  @db.Decimal(78, 0) @map("amount_b")
+  lpShares    Decimal  @db.Decimal(78, 0) @map("lp_shares")
+  ts          DateTime
+  blockNumber Int      @map("block_number")
+  txHash      String   @map("tx_hash")
+
+  @@index([pool, ts(sort: Desc)])
+  @@map("pool_liquidity")
+}
+
 model IndexerCursor {
   name   String  @id
   block  BigInt

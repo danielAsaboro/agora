@@ -67,13 +67,15 @@ REGISTRY_ABI = [
 
 VAULT_ABI = [
     {
+        # NOTE: the deployed PythiaVault predates the replay-guard `nonce` param
+        # added to PythiaVault.sol. The on-chain signature is the 4-arg form;
+        # calling the 5-arg form reverts in the selector dispatcher (no match).
         "type": "function", "name": "openPosition", "stateMutability": "nonpayable",
         "inputs": [
             {"name": "marketId", "type": "bytes32"},
             {"name": "yes", "type": "bool"},
             {"name": "amount", "type": "uint256"},
             {"name": "prob", "type": "uint256"},
-            {"name": "nonce", "type": "bytes32"},
         ],
         "outputs": [{"name": "positionId", "type": "uint256"}],
     },
@@ -121,7 +123,7 @@ class _Signer:
 
     def open_position(
         self, vault_addr: str, market_id: bytes, yes: bool, amount: int,
-        prob: int, position_nonce: bytes,
+        prob: int,
     ) -> str:
         raise NotImplementedError
 
@@ -159,15 +161,13 @@ class EoaSigner(_Signer):
         return self._wait(h)
 
     def open_position(
-        self, vault_addr, market_id, yes, amount, prob, position_nonce,
+        self, vault_addr, market_id, yes, amount, prob,
     ) -> str:
-        if len(position_nonce) != 32:
-            raise ValueError("position_nonce must be 32 bytes")
         vault = self.w3.eth.contract(
             address=Web3.to_checksum_address(vault_addr), abi=VAULT_ABI,
         )
         tx = vault.functions.openPosition(
-            market_id, yes, amount, prob, position_nonce,
+            market_id, yes, amount, prob,
         ).build_transaction({
             "from": self.account.address,
             "nonce": self.w3.eth.get_transaction_count(self.account.address, "pending"),
@@ -263,19 +263,16 @@ class CircleSigner(_Signer):
         )
 
     def open_position(
-        self, vault_addr, market_id, yes, amount, prob, position_nonce,
+        self, vault_addr, market_id, yes, amount, prob,
     ) -> str:
-        if len(position_nonce) != 32:
-            raise ValueError("position_nonce must be 32 bytes")
         return self._submit(
             vault_addr,
-            "openPosition(bytes32,bool,uint256,uint256,bytes32)",
+            "openPosition(bytes32,bool,uint256,uint256)",
             [
                 "0x" + market_id.hex(),
                 bool(yes),
                 str(int(amount)),
                 str(int(prob)),
-                "0x" + position_nonce.hex(),
             ],
         )
 
@@ -331,10 +328,10 @@ class RegistryClient:
 
     def open_vault_position(
         self, vault_addr: str, market_id: bytes, yes: bool, amount: int,
-        prob: int, position_nonce: bytes,
+        prob: int,
     ) -> str:
         return self.signer.open_position(
-            vault_addr, market_id, yes, amount, prob, position_nonce,
+            vault_addr, market_id, yes, amount, prob,
         )
 
     def get_vault_market(self, vault_addr: str) -> str:

@@ -224,7 +224,6 @@ class BasePythia(ABC):
             amt = self.decide_position_amount(brain, market)
             if amt > 0:
                 yes = brain.prob >= 0.5
-                position_nonce = trace_hash  # already 32 bytes (keccak256 output)
                 try:
                     # The vault's openPosition CPIs into the market adapter, which
                     # rejects markets it hasn't been told about. List the chosen
@@ -232,7 +231,7 @@ class BasePythia(ABC):
                     market_addr = self.client.get_vault_market(self.vault_addr)
                     if self.client.ensure_market_listed(market_addr, market_id, market["label"]):
                         pos_tx = self.client.open_vault_position(
-                            self.vault_addr, market_id, yes, amt, prob_scaled, position_nonce
+                            self.vault_addr, market_id, yes, amt, prob_scaled
                         )
                         log.info("[%s] openPosition tx=%s amt=%d yes=%s", self.name, pos_tx, amt, yes)
                 except Exception as e:

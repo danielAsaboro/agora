@@ -1,8 +1,41 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { parseUnits } from "viem";
-import { prisma, hexToBuf } from "@/lib/db";
+import { prisma, hexToBuf, bufToHex } from "@/lib/db";
 import { pushTraction } from "@/lib/traction";
+
+/// GET /api/stakes?staker=0x...&nameHash=0x...&type=crosschain&limit=20
+/// Used by CrossChainStakePanel to poll for Arc confirmation after a CCTP bridge.
+export async function GET(req: NextRequest) {
+  const staker = req.nextUrl.searchParams.get("staker");
+  const nameHashHex = req.nextUrl.searchParams.get("nameHash");
+  const type = req.nextUrl.searchParams.get("type");
+  const limit = Math.min(Number(req.nextUrl.searchParams.get("limit") ?? "20"), 50);
+
+  const where: Record<string, unknown> = {};
+  if (staker && /^0x[0-9a-fA-F]{40}$/.test(staker)) where.userAddress = staker;
+  if (nameHashHex && /^0x[0-9a-f]{64}$/i.test(nameHashHex)) where.nameHash = hexToBuf(nameHashHex);
+  if (type === "crosschain") where.action = "cross_chain_stake";
+
+  const stakes = await prisma.stake.findMany({
+    where,
+    orderBy: { blockTime: "desc" },
+    take: limit,
+    select: {
+      id: true,
+      nameHash: true,
+      userAddress: true,
+      action: true,
+      quoteAmount: true,
+      blockTime: true,
+      blockNumber: true,
+    },
+  });
+
+  return NextResponse.json({
+    stakes: stakes.map((s) => ({ ...s, nameHash: bufToHex(s.nameHash) })),
+  });
+}
 
 const schema = z.object({
   vaultAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),

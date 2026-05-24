@@ -14,10 +14,15 @@
     "db:reset": "prisma migrate reset",
     "db:studio": "prisma studio",
     "register:all": "tsx scripts/register-all.ts",
+    "deploy:amm": "tsx scripts/deploy-amm.ts",
+    "deploy:multiquote": "tsx scripts/deploy-multiquote-factory.ts",
+    "deploy:cctp": "tsx scripts/deploy-cctp.ts",
     "circle:entity-secret": "node scripts/generate-entity-secret.mjs",
     "irys:wallet": "node scripts/generate-irys-wallet.mjs",
     "irys:upload": "node scripts/irys-upload.mjs",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@circle-fin/developer-controlled-wallets": "^4.6.0",
@@ -50,11 +55,13 @@
     "@types/node": "20.10.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@vitest/coverage-v8": "^4.1.7",
     "autoprefixer": "^10.4.20",
     "dotenv": "^16.4.7",
     "postcss": "^8.4.45",
     "tailwindcss": "^3.4.10",
     "tsx": "^4.19.0",
-    "typescript": "5.5.4"
+    "typescript": "5.5.4",
+    "vitest": "^4.1.7"
   }
 }

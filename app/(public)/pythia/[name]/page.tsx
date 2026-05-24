@@ -12,6 +12,9 @@ import { ForecastScroll, Forecast } from "@/components/codex/ForecastScroll";
 import { CalibrationChart, ResolvedForecast } from "@/components/codex/CalibrationChart";
 import { VaultStats } from "@/components/codex/VaultStats";
 import { RedeemPanel } from "@/components/codex/RedeemPanel";
+import { DisputesList } from "@/components/codex/DisputesList";
+import { SwapPanel } from "@/components/codex/SwapPanel";
+import { CrossChainStakePanel } from "@/components/codex/CrossChainStakePanel";
 
 export const revalidate = 0;
 export const dynamic = "force-dynamic";
@@ -39,6 +42,8 @@ export default async function PythiaProfile({ params }: { params: Promise<{ name
   const bondUsdc = Number(p.bondBalance.toString()) / 1_000_000;
   const stakeUsdc = Number(p.stakePrincipal.toString()) / 1_000_000;
   const bondFloorUsdc = p.bondFloor ? Number(p.bondFloor.toString()) / 1_000_000 : undefined;
+  const poolAddress: string = (p.extra as any)?.poolAddress ?? "0x0000000000000000000000000000000000000000";
+  const denomination: string = (p.extra as any)?.denomination ?? "USDC";
 
   const forecasts: Forecast[] = p.forecasts.map((f) => ({
     id: f.id,
@@ -49,6 +54,7 @@ export default async function PythiaProfile({ params }: { params: Promise<{ name
     outcomeYes: f.marketOutcomeYes,
     brier: f.brierContribution != null ? Number(f.brierContribution) : null,
     traceIrysId: f.traceIrysId,
+    traceHashHex: bufToHex(f.traceHash),
     evidence: (f as any).evidenceJson
       ? safeStringify((f as any).evidenceJson)
       : "Evidence trace pinned to Irys — open trace to view.",
@@ -164,7 +170,23 @@ export default async function PythiaProfile({ params }: { params: Promise<{ name
                 {forecasts.length} pinned
               </span>
             </div>
-            <ForecastScroll forecasts={forecasts} />
+            <ForecastScroll
+              forecasts={forecasts}
+              nameHashHex={nameHashHex}
+              pythiaName={p.name}
+            />
+          </div>
+
+          <div className="tablet rounded-sm p-6 md:p-8">
+            <div className="mb-5">
+              <p className="font-mono text-[10px] tracking-[0.4em] uppercase text-oracle-bronze">
+                Accountability
+              </p>
+              <h2 className="font-cinzel text-3xl tracking-wide text-agora-parchment mt-1">
+                Disputes
+              </h2>
+            </div>
+            <DisputesList nameHashHex={nameHashHex} />
           </div>
         </div>
 
@@ -190,6 +212,7 @@ export default async function PythiaProfile({ params }: { params: Promise<{ name
 
             <VaultStats
               vaultAddress={p.vaultAddress ?? "0x0000000000000000000000000000000000000000"}
+              denomination={denomination}
             />
 
             <StakeForm
@@ -207,6 +230,17 @@ export default async function PythiaProfile({ params }: { params: Promise<{ name
               <FaucetButton />
             </div>
           </div>
+
+          <SwapPanel
+            poolAddress={poolAddress}
+            pytAddress={p.vaultAddress ?? "0x0000000000000000000000000000000000000000"}
+            pythiaName={p.name}
+          />
+
+          <CrossChainStakePanel
+            pythiaName={p.name}
+            nameHashHex={nameHashHex}
+          />
         </aside>
       </section>
     </div>

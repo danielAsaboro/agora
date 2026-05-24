@@ -5,13 +5,28 @@ import { toast } from "sonner";
 import { parseUnits, keccak256, stringToBytes, createPublicClient, http, parseEventLogs } from "viem";
 import { useAccount, useWriteContract } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { Erc20Abi, PythiaVaultFactoryAbi } from "@/lib/abis";
+import { Erc20Abi, PythiaVaultFactoryAbi, MultiQuoteVaultFactoryAbi } from "@/lib/abis";
 import { arcTestnet } from "@/lib/wagmi";
 import { PythiaDossier } from "@/components/codex/PythiaDossier";
 import { GreekKey } from "@/components/codex/GreekKey";
 
 const FACTORY = process.env.NEXT_PUBLIC_VAULT_FACTORY_ADDRESS as `0x${string}` | undefined;
+const MULTIQUOTE_FACTORY = process.env.NEXT_PUBLIC_MULTIQUOTE_FACTORY_ADDRESS as `0x${string}` | undefined;
 const USDC = process.env.NEXT_PUBLIC_USDC_CONTRACT_ADDRESS as `0x${string}` | undefined;
+const USYC = process.env.NEXT_PUBLIC_USYC_ADDRESS as `0x${string}` | undefined;
+const EURC = process.env.NEXT_PUBLIC_EURC_ADDRESS as `0x${string}` | undefined;
+
+type Denomination = "USDC" | "USYC" | "EURC";
+const DENOM_LABELS: Record<Denomination, string> = {
+  USDC: "USDC — USD Coin (default)",
+  USYC: "USYC — US Yield Coin (yield-bearing)",
+  EURC: "EURC — Euro Coin",
+};
+function denomToAddress(d: Denomination): `0x${string}` | undefined {
+  if (d === "USYC") return USYC;
+  if (d === "EURC") return EURC;
+  return USDC;
+}
 
 type Stage = "idle" | "wallet" | "approving" | "creating" | "mirroring" | "done";
 
@@ -23,6 +38,7 @@ export default function RegisterPythia() {
   const [bondFloor, setBondFloor] = useState("500");
   const [initialBond, setInitialBond] = useState("1000");
   const [autoWallet, setAutoWallet] = useState(true);
+  const [denomination, setDenomination] = useState<Denomination>("USDC");
   const [stage, setStage] = useState<Stage>("idle");
 
   const { writeContractAsync } = useWriteContract();
@@ -43,8 +59,15 @@ export default function RegisterPythia() {
       toast.error("Connect your wallet first");
       return;
     }
-    if (!FACTORY || !USDC) {
-      toast.error("Factory / USDC address not configured");
+    const quoteAddress = denomToAddress(denomination);
+    if (!quoteAddress) {
+      toast.error(`${denomination} address not configured`);
+      return;
+    }
+    const useMultiquote = denomination !== "USDC" && Boolean(MULTIQUOTE_FACTORY);
+    const activeFactory = useMultiquote ? MULTIQUOTE_FACTORY! : FACTORY;
+    if (!activeFactory) {
+      toast.error("Factory address not configured");
       return;
     }
 
@@ -85,6 +108,7 @@ export default function RegisterPythia() {
         }
       }
 
+      const USDC_FOR_APPROVE = quoteAddress;
       setStage("approving");
       const manifest = {
         name,
@@ -104,28 +128,44 @@ export default function RegisterPythia() {
       const mRoot = keccak256(stringToBytes(mandateCategories.sort().join("|")));
 
       const approveHash = await writeContractAsync({
-        address: USDC,
+        address: USDC_FOR_APPROVE,
         abi: Erc20Abi,
         functionName: "approve",
-        args: [FACTORY, initialBondWei],
+        args: [activeFactory, initialBondWei],
       });
       await pub.waitForTransactionReceipt({ hash: approveHash });
 
       setStage("creating");
-      const createHash = await writeContractAsync({
-        address: FACTORY,
-        abi: PythiaVaultFactoryAbi,
-        functionName: "createPythia",
-        args: [
-          name,
-          daemonAddress,
-          "0x0000000000000000000000000000000000000000",
-          mHash,
-          mRoot,
-          bondFloorWei,
-          initialBondWei,
-        ],
-      });
+      const createHash = useMultiquote
+        ? await writeContractAsync({
+            address: activeFactory,
+            abi: MultiQuoteVaultFactoryAbi,
+            functionName: "createPythia",
+            args: [
+              name,
+              daemonAddress,
+              "0x0000000000000000000000000000000000000000",
+              mHash,
+              mRoot,
+              bondFloorWei,
+              initialBondWei,
+              quoteAddress,
+            ],
+          })
+        : await writeContractAsync({
+            address: activeFactory,
+            abi: PythiaVaultFactoryAbi,
+            functionName: "createPythia",
+            args: [
+              name,
+              daemonAddress,
+              "0x0000000000000000000000000000000000000000",
+              mHash,
+              mRoot,
+              bondFloorWei,
+              initialBondWei,
+            ],
+          });
       const receipt = await pub.waitForTransactionReceipt({ hash: createHash });
 
       const events = parseEventLogs({
@@ -156,6 +196,7 @@ export default function RegisterPythia() {
           manifestHash: mHash,
           mandateRoot: mRoot,
           circleWalletId,
+          denomination,
         }),
       });
       if (!mirror.ok) {
@@ -274,6 +315,22 @@ export default function RegisterPythia() {
               />
             </Field>
           </div>
+
+          <Divider />
+
+          <Field label="Denomination" hint="Quote token for bond and staker capital. USYC/EURC require MultiQuoteVaultFactory to be deployed.">
+            <select
+              value={denomination}
+              onChange={(e) => setDenomination(e.target.value as Denomination)}
+              className="codex-input w-full px-3 py-2.5 rounded-sm font-mono text-[11px]"
+            >
+              {(Object.keys(DENOM_LABELS) as Denomination[]).map((d) => (
+                <option key={d} value={d}>
+                  {DENOM_LABELS[d]}
+                </option>
+              ))}
+            </select>
+          </Field>
 
           <Divider />
 

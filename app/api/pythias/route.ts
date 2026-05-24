@@ -18,6 +18,7 @@ const schema = z.object({
   manifestHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
   mandateRoot: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
   circleWalletId: z.string().nullable().optional(),
+  denomination: z.enum(["USDC", "USYC", "EURC"]).optional().default("USDC"),
 });
 
 /// POST /api/pythias — Postgres mirror for the client-signed createPythia tx.
@@ -49,6 +50,7 @@ export async function POST(req: NextRequest) {
       bondBalance: initialBondWei.toString(),
       description: body.description,
       circleWalletId: body.circleWalletId ?? null,
+      extra: { denomination: body.denomination },
     },
     create: {
       nameHash: nameHashBuf,
@@ -63,6 +65,7 @@ export async function POST(req: NextRequest) {
       bondBalance: initialBondWei.toString(),
       description: body.description,
       circleWalletId: body.circleWalletId ?? null,
+      extra: { denomination: body.denomination },
     },
   });
 
